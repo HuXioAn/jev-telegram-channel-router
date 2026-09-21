@@ -10,6 +10,11 @@
 
 Subscribe to **any public Telegram channel**, filter every new post with **Jev (TypeSafe) judgments**, and **route the matches** to your private chat or channels you manage.
 
+For example:
+- **Filter** — follow a noisy finance channel but only receive the high-importance posts.
+- **Categorize** — send crypto posts to your crypto channel and macro/policy posts to your news channel.
+- **Aggregate** — follow several channels and get everything China-related merged into one stream in your DM.
+
 > 中文版：[README.zh-CN.md](README.zh-CN.md)
 
 ## Core idea: Jev is the router
