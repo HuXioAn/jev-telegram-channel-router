@@ -43,6 +43,19 @@ async def _edit(query, text: str, reply_markup=None) -> None:
             raise
 
 
+# ------------------------------------------------------------------ 兜底与观测
+async def on_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """私聊里未匹配的文本/未知命令：回固定提示，避免“机器人没反应”的错觉。"""
+    if update.effective_message:
+        await update.effective_message.reply_text(msg.FALLBACK)
+
+
+async def log_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """每条更新记一行日志（独立分组）：用于排查“消息是否到底到达”。"""
+    user = update.effective_user
+    logger.info("update #%s from %s", update.update_id, user.id if user else "-")
+
+
 # ------------------------------------------------------------------ 基础命令
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user

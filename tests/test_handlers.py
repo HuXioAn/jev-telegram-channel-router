@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from telegram import (Chat, ChatMemberAdministrator, ChatMemberLeft,
                       ChatMemberMember, ChatMemberOwner, ChatMemberUpdated,
-                      Update, User)
+                      Message, Update, User)
 
 from tgfilter.bot import handlers as h
 from tgfilter.store import Store
@@ -97,3 +97,19 @@ def test_bot_commands_menu_covers_all_handlers():
     names = {c.command for c in BOT_COMMANDS}
     assert names == {"start", "new", "list", "test", "help", "cancel"}
     assert all(3 <= len(c.description) <= 256 for c in BOT_COMMANDS)
+
+
+def _text_update(text: str = "你好") -> Update:
+    return Update(update_id=2, message=Message(
+        message_id=10, date=datetime.now(timezone.utc),
+        chat=Chat(id=USER_ID, type="private"),
+        from_user=User(id=USER_ID, first_name="Anton", is_bot=False), text=text))
+
+
+async def test_plain_text_gets_fallback_hint(tmp_path):
+    """私聊纯文本不再石沉大海：兜底回复引导性提示。"""
+    store, bot, context = _make(tmp_path)
+    update = _text_update()
+    update.message.set_bot(bot)
+    await h.on_plain_text(update, context)
+    assert bot.sent and "还没学会" in bot.sent[0][1]

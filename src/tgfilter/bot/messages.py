@@ -83,6 +83,12 @@ CHAT_ADDED = "✅ 已登记频道「{title}」。现在可以在 /new 的目的�
 CANCELED = "已取消。"
 ERROR = "⚠️ 出错了：{err}"
 UNCONFIGURED = "⚠️ 服务未配置 TYPESAFE_API_KEY，暂时无法工作。请联系管理员。"
+FALLBACK = (
+    "🤖 我还没学会处理这类消息。\n\n"
+    "· /new — 新建订阅\n"
+    "· /list — 管理订阅\n"
+    "· /help — 使用说明"
+)
 
 
 def sub_line(sub: dict, template) -> str:

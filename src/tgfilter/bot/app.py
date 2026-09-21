@@ -6,11 +6,11 @@ import logging
 from datetime import datetime, timezone
 
 import httpx
-from telegram import Bot, BotCommand
+from telegram import Bot, BotCommand, Update
 from telegram.error import TelegramError
 from telegram.ext import (Application, ApplicationBuilder, CallbackQueryHandler,
                           ChatMemberHandler, CommandHandler, ConversationHandler,
-                          MessageHandler, filters)
+                          MessageHandler, TypeHandler, filters)
 
 from ..channel_fetch import ChannelFetcher
 from ..config import Settings
@@ -123,5 +123,10 @@ def build_application(settings: Settings) -> Application:
     app.add_handler(CallbackQueryHandler(h.on_ui, pattern=r"^ui:(list|help)$"))
     app.add_handler(CallbackQueryHandler(h.on_sub_action, pattern=r"^sub:"))
     app.add_handler(ChatMemberHandler(h.on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
+    # 私聊兜底：未识别的文本/未知命令 → 固定提示（必须排在全部业务处理器之后）
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & (filters.TEXT | filters.COMMAND), h.on_plain_text))
+    # 独立分组：每条更新记一行日志，用于排查「消息到底有没有到」
+    app.add_handler(TypeHandler(Update, h.log_update), group=1)
     app.add_error_handler(h.on_error)
     return app
