@@ -151,6 +151,17 @@ LLM 只在「自然语言 → Jev 模板」这一步用到；换服务商只需�
 - **滑动窗口**：公开预览通常只保留最近约 25 万条；停机过久可能漏掉窗口外的消息。
 - **投递即复制**：推送为「原文 + 链接」的复制转发（本 bot 对源频道无任何权限，无法原生转发）。
 
+## 部署（systemd）
+
+```bash
+cp deploy/tg-filter-bot.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now tg-filter-bot
+systemctl status tg-filter-bot    # 状态
+tail -f data/bot.log              # 日志（追加写入）
+```
+
+服务以项目 venv 运行、开机自启、异常自动拉起；改代码后 `systemctl restart tg-filter-bot` 即可。
+
 ## 测试
 
 ```bash
