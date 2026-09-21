@@ -49,9 +49,11 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 
 cp .env.example .env      # 填 BOT_TOKEN 和 TYPESAFE_API_KEY
-                          # （可选）OpenAI 兼容 LLM key，示例见 .env.example
+                          # （可选）LLM key——见下方说明
 python -m tgfilter        # 运行
 ```
+
+`.env` 里的 LLM key（`OPENAI_*`，任意 OpenAI 兼容端点）为**可选**：如果希望用自然语言描述筛选条件、由 LLM 编译成 Jev 模板，就需要配置它；不配置时，向导里只能直接粘贴 JSON 模板。
 
 然后给 bot 发 `/start` → `/new`。要推送到频道，先把 bot 加为频道管理员。
 

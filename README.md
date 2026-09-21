@@ -50,9 +50,11 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 
 cp .env.example .env      # fill in BOT_TOKEN and TYPESAFE_API_KEY
-                          # (optionally an OpenAI-compatible LLM key — see .env.example)
+                          # (optionally an LLM key — see below)
 python -m tgfilter        # run
 ```
+
+An OpenAI-compatible LLM key (`OPENAI_*` in `.env`) is **optional**: configure it if you want to describe filtering conditions in natural language and have the LLM compile them into Jev templates. Without it, the wizard only accepts a raw JSON template.
 
 Then message the bot: `/start` → `/new`. To deliver into a channel, add the bot as a channel admin first.
 
