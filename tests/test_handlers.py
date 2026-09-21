@@ -223,3 +223,34 @@ async def test_subscription_cap_per_user(tmp_path):
     assert state == h.ConversationHandler.END
     assert any("上限" in text for text in bot.edited)
     assert len(store.list_subscriptions(user_id=USER_ID)) == h.MAX_SUBS_PER_USER
+
+
+async def test_blocked_user_commands_refused(tmp_path):
+    """被管理员停用后：/list、/test 只回提示，不提供任何功能。"""
+    store, bot, context = _make(tmp_path)
+    store.add_user(USER_ID, "ant")
+    store.set_user_fields(USER_ID, status="blocked")
+    update = _text_update("/list")
+    update.message.set_bot(bot)
+    await h.cmd_list(update, context)
+    assert bot.sent and "暂停" in bot.sent[0][1]
+    update = _text_update("/test")
+    update.message.set_bot(bot)
+    await h.cmd_test(update, context)
+    assert "暂停" in bot.sent[-1][1]
+
+
+async def test_llm_compile_records_usage(tmp_path):
+    """模板编译计入 llm 用量（成功与失败都计，便于计费）。"""
+    store, bot, context = _make(tmp_path)
+
+    class FakeCompiler:
+        async def compile(self, text, feedback=None, previous=None):
+            return make_template()
+
+    context.application.bot_data["services"].compiler = FakeCompiler()
+    update = _text_update("只要是与中国相关的消息")
+    update.message.set_bot(bot)
+    state = await h.on_describe(update, context)
+    assert state == h.CONFIRM_TEMPLATE
+    assert store.usage_sum(user_id=USER_ID, kind="llm") == 1

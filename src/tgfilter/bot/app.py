@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timezone
 
 import httpx
-from telegram import Bot, BotCommand, Update
+from telegram import Bot, BotCommand, BotCommandScopeChat, Update
 from telegram.error import TelegramError
 from telegram.ext import (Application, ApplicationBuilder, BaseUpdateProcessor,
                           CallbackQueryHandler, ChatMemberHandler, CommandHandler,
@@ -20,6 +20,7 @@ from ..llm import TemplateCompiler
 from ..pipeline import Pipeline
 from ..services import Services
 from ..store import Store
+from . import admin as admin_handlers
 from . import handlers as h
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,14 @@ def build_application(settings: Settings) -> Application:
             await app.bot.set_my_commands(BOT_COMMANDS)
         except TelegramError:
             logger.warning("set_my_commands 失败（命令菜单未注册）", exc_info=True)
+        # 管理员专属菜单：/admin 只出现在管理员自己的客户端里
+        for admin_id in settings.admin_user_ids:
+            try:
+                await app.bot.set_my_commands(
+                    BOT_COMMANDS + [BotCommand("admin", "管理员面板")],
+                    scope=BotCommandScopeChat(chat_id=admin_id))
+            except TelegramError:
+                logger.warning("set_my_commands(admin=%s) 失败", admin_id, exc_info=True)
         app.job_queue.run_repeating(_tick, interval=TICK_SECONDS, first=10,
                                     name="due-subscriptions")
 
@@ -163,6 +172,7 @@ def build_application(settings: Settings) -> Application:
     app.add_handler(CommandHandler("help", h.cmd_help))
     app.add_handler(CommandHandler("list", h.cmd_list))
     app.add_handler(CommandHandler("test", h.cmd_test))
+    app.add_handler(CommandHandler("admin", admin_handlers.cmd_admin))
     app.add_handler(CallbackQueryHandler(h.on_ui, pattern=r"^ui:(list|help)$"))
     app.add_handler(CallbackQueryHandler(h.on_sub_action, pattern=r"^sub:"))
     app.add_handler(ChatMemberHandler(h.on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))

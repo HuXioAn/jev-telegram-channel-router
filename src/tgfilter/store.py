@@ -12,6 +12,10 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
     username TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    max_subs INTEGER,
+    quota_jev_monthly INTEGER,
+    note TEXT,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS chats (
@@ -42,11 +46,27 @@ CREATE TABLE IF NOT EXISTS logs (
     kind TEXT NOT NULL,
     detail TEXT
 );
+CREATE TABLE IF NOT EXISTS usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    sub_id INTEGER,
+    kind TEXT NOT NULL,
+    qty INTEGER NOT NULL DEFAULT 1,
+    detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_usage_user_ts ON usage(user_id, ts);
 """
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def month_start(now: datetime | None = None) -> datetime:
+    """当月起点（UTC），按月统计配额用。"""
+    moment = now or datetime.now(timezone.utc)
+    return moment.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
 def _parse_ts(value: str | None) -> datetime | None:
@@ -73,18 +93,56 @@ class Store:
         with self._lock:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.executescript(_SCHEMA)
+            self._migrate()
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        """旧库平滑升级：补齐 users 表后续新增的列。"""
+        cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(users)")}
+        additions = {
+            "status": "TEXT NOT NULL DEFAULT 'active'",
+            "max_subs": "INTEGER",
+            "quota_jev_monthly": "INTEGER",
+            "note": "TEXT",
+        }
+        for name, ddl in additions.items():
+            if name not in cols:
+                self._conn.execute(f"ALTER TABLE users ADD COLUMN {name} {ddl}")
 
     def close(self) -> None:
         with self._lock:
             self._conn.close()
 
     # ------------------------------------------------------------- users
-    def add_user(self, user_id: int, username: str = "") -> None:
+    def add_user(self, user_id: int, username: str = "",
+                 default_status: str = "active") -> None:
         self._run(
-            "INSERT INTO users(id, username, created_at) VALUES(?,?,?) "
+            "INSERT INTO users(id, username, status, created_at) VALUES(?,?,?,?) "
             "ON CONFLICT(id) DO UPDATE SET username=excluded.username",
-            (user_id, username, _now()))
+            (user_id, username, default_status, _now()))
+
+    def get_user(self, user_id: int) -> dict | None:
+        rows = self._query("SELECT * FROM users WHERE id=?", (user_id,))
+        return rows[0] if rows else None
+
+    def list_users(self) -> list[dict]:
+        return self._query("SELECT * FROM users ORDER BY created_at")
+
+    def set_user_fields(self, user_id: int, **fields) -> None:
+        allowed = {"status", "max_subs", "quota_jev_monthly", "note", "username"}
+        updates = {key: value for key, value in fields.items() if key in allowed}
+        if not updates:
+            return
+        clause = ", ".join(f"{key}=?" for key in updates)
+        self._run(f"UPDATE users SET {clause} WHERE id=?",
+                  (*updates.values(), user_id))
+
+    def count_users(self) -> dict[str, int]:
+        result = {"total": 0, "active": 0, "blocked": 0}
+        for row in self._query("SELECT status, COUNT(*) AS n FROM users GROUP BY status"):
+            result["total"] += row["n"]
+            result[row["status"]] = result.get(row["status"], 0) + row["n"]
+        return result
 
     # ------------------------------------------------------------- chats
     def upsert_chat(self, chat_id: int, kind: str, title: str, added_by: int | None) -> None:
@@ -104,6 +162,71 @@ class Store:
     def get_chat(self, chat_id: int) -> dict | None:
         rows = self._query("SELECT * FROM chats WHERE chat_id=?", (chat_id,))
         return rows[0] if rows else None
+
+    # ------------------------------------------------------ 统计 / 用量
+    def count_subscriptions(self) -> dict[str, int]:
+        rows = self._query(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(enabled),0) AS e FROM subscriptions")
+        row = rows[0] if rows else {"n": 0, "e": 0}
+        return {"total": int(row["n"]), "enabled": int(row["e"])}
+
+    def count_subscriptions_for(self, user_id: int) -> int:
+        rows = self._query("SELECT COUNT(*) AS n FROM subscriptions WHERE user_id=?",
+                           (user_id,))
+        return int(rows[0]["n"]) if rows else 0
+
+    def record_usage(self, user_id: int, kind: str, qty: int = 1,
+                     sub_id: int | None = None, detail: str = "") -> None:
+        """记录一条用量：kind ∈ jev/llm/run/fetch/deliver。"""
+        self._run(
+            "INSERT INTO usage(ts, user_id, sub_id, kind, qty, detail) VALUES(?,?,?,?,?,?)",
+            (_now(), user_id, sub_id, kind, max(0, int(qty)), detail[:500] or None))
+
+    def usage_sum(self, user_id: int | None = None, kind: str | None = None,
+                  since: datetime | None = None) -> int:
+        sql, args = "SELECT COALESCE(SUM(qty),0) AS s FROM usage WHERE 1=1", []
+        if user_id is not None:
+            sql += " AND user_id=?"
+            args.append(user_id)
+        if kind is not None:
+            sql += " AND kind=?"
+            args.append(kind)
+        if since is not None:
+            sql += " AND ts>=?"
+            args.append(since.isoformat())
+        rows = self._query(sql, tuple(args))
+        return int(rows[0]["s"])
+
+    def usage_by_kind(self, user_id: int | None = None,
+                      since: datetime | None = None) -> dict[str, int]:
+        sql, args = "SELECT kind, COALESCE(SUM(qty),0) AS s FROM usage WHERE 1=1", []
+        if user_id is not None:
+            sql += " AND user_id=?"
+            args.append(user_id)
+        if since is not None:
+            sql += " AND ts>=?"
+            args.append(since.isoformat())
+        sql += " GROUP BY kind"
+        return {row["kind"]: int(row["s"]) for row in self._query(sql, tuple(args))}
+
+    def usage_rows(self, since: datetime | None = None) -> list[dict]:
+        """按 (user_id, kind) 汇总，供管理员视图聚合。"""
+        sql, args = ("SELECT user_id, kind, COALESCE(SUM(qty),0) AS s "
+                     "FROM usage WHERE 1=1"), []
+        if since is not None:
+            sql += " AND ts>=?"
+            args.append(since.isoformat())
+        sql += " GROUP BY user_id, kind"
+        return self._query(sql, tuple(args))
+
+    def recent_usage(self, user_id: int | None = None, limit: int = 10) -> list[dict]:
+        sql, args = "SELECT * FROM usage WHERE 1=1", []
+        if user_id is not None:
+            sql += " AND user_id=?"
+            args.append(user_id)
+        sql += " ORDER BY id DESC LIMIT ?"
+        args.append(limit)
+        return self._query(sql, tuple(args))
 
     # ----------------------------------------------------- subscriptions
     def add_subscription(self, *, user_id: int, source: str, template: Template,

@@ -5,6 +5,7 @@
 - 多用户：任何 Telegram 用户都可以创建自己的订阅（源频道、筛选条件、目的地各自独立）。
 - 自然语言配置：用一句话描述想筛选什么，LLM 编译成**可反复执行的 Jev 模板**；确认后可试跑、可让 AI 调整。
 - 全程无 agent loop、不自然语言回复用户——bot 只回状态与结果。
+- 用量统计与管理员后台：按用户逐条计量（Jev 判定/LLM 编译/执行/抓取/推送），管理员可查询台账、封禁用户、设置配额。
 - 只用官方 Bot API + `t.me/s/` 公开预览，不使用 userbot，不读取私有频道。
 
 ## 工作原理
@@ -32,12 +33,13 @@ src/tgfilter/
 ├── channel_fetch.py   # t.me/s/ 抓取、解析、续抓（限速）
 ├── jev.py             # Jev(TypeSafe) 客户端：并发 + 退避重试
 ├── llm.py             # 自然语言 → 模板编译器（单轮调用、JSON mode 自动降级）
-├── store.py           # SQLite：users/chats/subscriptions/logs
-├── pipeline.py        # 单订阅执行管线（run / preview）
+├── store.py           # SQLite：users/chats/subscriptions/logs/usage
+├── pipeline.py        # 单订阅执行管线（run / preview）+ 用量记录与配额执行
 ├── delivery.py        # 投递抽象（DM / 频道）
 ├── services.py        # 服务容器
 └── bot/
     ├── app.py         # Application 构建 + 到期调度
+    ├── admin.py       # 管理员后台（/admin：用量/用户/配额）
     ├── handlers.py    # 命令、/new 向导、回调、频道成员事件
     ├── keyboards.py   # Inline 键盘
     ├── messages.py    # 全部文案（集中管理）
@@ -84,6 +86,8 @@ python -m tgfilter          # 或：tg-filter-bot
 | `JEV_CONCURRENCY` | Jev 并发数 | `8` |
 | `FETCH_PAGE_DELAY` | 抓取翻页间隔（秒） | `0.6` |
 | `DIGEST_CHUNK_LIMIT` | 单条消息字符上限 | `3800` |
+| `ADMIN_USER_IDS` | 管理员（bot owner）Telegram 用户 id，逗号分隔；留空则管理员命令禁用 | — |
+| `DEFAULT_USER_STATUS` | 新用户默认状态：`active` / `blocked`（邀请制） | `active` |
 
 ### 接入任意 OpenAI 兼容 LLM（示例）
 
@@ -144,11 +148,42 @@ LLM 只在「自然语言 → Jev 模板」这一步用到；换服务商只需�
 - `op` 支持 `>=` `<=` `==` `in` `not_in`；`logic` 支持 `all` / `any`。
 - 问题 id 用英文小写；`title` 仅用于展示，不发给 Jev。
 
+## 用量统计与管理员后台
+
+每个用户逐条记录用量（`usage` 表，含时间与订阅号），五个维度：
+
+| kind | 计什么 |
+| --- | --- |
+| `jev` | Jev 判定条数（主要成本，计费核心） |
+| `llm` | 模板编译次数（成功/失败都计） |
+| `run` | 订阅执行轮次（含试跑） |
+| `fetch` | 频道抓取次数 |
+| `deliver` | 推送消息条数 |
+
+管理员由 `.env` 的 `ADMIN_USER_IDS` 指定（仅私聊生效；`/admin` 只出现在管理员自己的命令菜单里）：
+
+| 命令 | 作用 |
+| --- | --- |
+| `/admin` | 总览：用户/订阅数、今日/7/30/累计用量、30 天 Top 5 |
+| `/admin users [n]` | 用户列表：状态、订阅数、30 天用量 |
+| `/admin user <id>` | 详情：配额、本月 Jev 已用、订阅列表、各窗口用量、最近记录 |
+| `/admin usage [days]` | 按用户用量汇总（默认 30 天）——当月台账 |
+| `/admin block <id>` / `unblock <id>` | 停用 / 恢复（停用会自动暂停其全部订阅并通知本人） |
+| `/admin quota <id> sub <n>` | 订阅数上限（0=默认 20） |
+| `/admin quota <id> jev <n>` | 每月 Jev 判定配额（0=不限；用尽自动暂停订阅并通知） |
+| `/admin note <id> <备注>` | 管理备注 |
+
+- 被停用的用户：/start /new /list /test 一律只回提示，不接受任何操作。
+- `DEFAULT_USER_STATUS=blocked` 可开启邀请制：新用户默认无权限，由管理员 `/admin unblock` 放行。
+- 计费建议：以 `jev`、`llm` 两个维度计价；`/admin usage 30` 即当月用量台账，`/admin user <id>` 看单人明细。
+- 配额按月（UTC）计算；用尽自动暂停订阅并通知用户，管理员调整配额后用户可在 /list 恢复订阅。
+
 ## 设计约束（有意为之）
 
 - **不回复自然语言**：bot 不做对话式回复；未识别的文本/未知命令只回一句固定提示（引导用 /help）。
 - **多用户隔离**：订阅/频道目的地全部按用户校验归属；频道目的地只有「把机器人添加进频道的人」可选；/list /test 限私聊。
 - **多用户并发**：全局最多 12 条更新并行（用户间互不阻塞），同一聊天严格串行（向导不乱序）；发送侧自带 Telegram 限流退避重试。
+- **用量与配额**：所有执行路径（含试跑）逐条计量入账；配额用尽自动暂停订阅，不静默超支。
 - **无 agent loop**：LLM 只做「描述 → JSON 模板」单轮翻译；编译失败自动带错误重试一次。
 - **白道抓取**：仅 `t.me/s/` 预览；频道若关闭网页预览则无法抓取（向导会即时提示）。
 - **滑动窗口**：公开预览通常只保留最近约 25 万条；停机过久可能漏掉窗口外的消息。

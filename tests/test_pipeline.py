@@ -156,3 +156,43 @@ async def test_preview_returns_latest_samples_first(tmp_path):
     assert [post.id for post, _ in result.sample] == [104, 103]  # 最新在前
     assert sender.sent == []
     assert fetcher.fetch_calls == [100]
+
+
+async def test_run_records_usage(tmp_path):
+    """正常一轮：run / fetch / jev / deliver 全部入账。"""
+    posts = [Post(id=101, text="a", url="u1"), Post(id=102, text="b", url="u2")]
+    store, sub, _, _, _, pipeline = _make_env(tmp_path, posts,
+                                              {"a": _hit(0.95), "b": _hit(0.1)})
+    await pipeline.run(sub)
+    counts = store.usage_by_kind(user_id=7)
+    assert counts == {"run": 1, "fetch": 1, "jev": 2, "deliver": 1}
+
+
+async def test_run_quota_exhausted_pauses_subscription(tmp_path):
+    """配额已用尽：不再判定，订阅自动暂停并给出提示。"""
+    posts = [Post(id=101, text="a", url="u1")]
+    store, sub, _, _, _, pipeline = _make_env(tmp_path, posts, {"a": _hit(0.95)})
+    store.add_user(7)
+    store.record_usage(7, "jev", 5)
+    store.set_user_fields(7, quota_jev_monthly=5)
+    result = await pipeline.run(sub)
+    assert "配额" in result.error
+    assert store.get_subscription(sub["id"])["enabled"] == 0
+    assert store.usage_sum(user_id=7, kind="jev") == 5  # 未再判定
+    kinds = [row["kind"] for row in store._query("SELECT kind FROM logs")]
+    assert kinds == ["quota_exhausted"]
+
+
+async def test_run_quota_truncates_batch(tmp_path):
+    """配额将尽：只判定配额允许的条数，用尽后自动暂停。"""
+    posts = [Post(id=101, text="a", url="u1"), Post(id=102, text="b", url="u2"),
+             Post(id=103, text="c", url="u3")]
+    store, sub, _, _, _, pipeline = _make_env(
+        tmp_path, posts, {"a": _hit(0.95), "b": _hit(0.95), "c": _hit(0.95)})
+    store.add_user(7)
+    store.record_usage(7, "jev", 2)
+    store.set_user_fields(7, quota_jev_monthly=3)
+    result = await pipeline.run(sub)
+    assert store.usage_sum(user_id=7, kind="jev") == 3  # 配额 3-2=1，只判 1 条
+    assert store.get_subscription(sub["id"])["enabled"] == 0
+    assert "配额" in result.error

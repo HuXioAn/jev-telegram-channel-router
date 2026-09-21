@@ -38,6 +38,12 @@ def _require_private(update: Update) -> bool:
     return chat is not None and chat.type == ChatType.PRIVATE
 
 
+def _blocked(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    """用户是否已被管理员停用（见 /admin block）。"""
+    user = _svc(context).store.get_user(user_id) or {}
+    return user.get("status") == "blocked"
+
+
 def resolve_dest_chat(store, user_id: int, chat_id: int) -> dict | None:
     """目的地频道归属校验：只有把机器人添加进该频道的人才能选它。"""
     chat = store.get_chat(chat_id)
@@ -75,7 +81,11 @@ async def log_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 # ------------------------------------------------------------------ 基础命令
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    _svc(context).store.add_user(user.id, user.username or "")
+    svc = _svc(context)
+    if _blocked(context, user.id):
+        await update.effective_message.reply_text(msg.BLOCKED)
+        return
+    svc.store.add_user(user.id, user.username or "", svc.settings.default_user_status)
     await update.effective_message.reply_text(msg.WELCOME, reply_markup=main_menu_kb())
 
 
@@ -101,8 +111,12 @@ async def cmd_new(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if chat is not None and chat.type != ChatType.PRIVATE:
         await update.effective_message.reply_text("请在私聊中使用 /new 创建订阅。")
         return ConversationHandler.END
+    if _blocked(context, update.effective_user.id):
+        await update.effective_message.reply_text(msg.BLOCKED)
+        return ConversationHandler.END
     _svc(context).store.add_user(update.effective_user.id,
-                                 update.effective_user.username or "")
+                                 update.effective_user.username or "",
+                                 settings.default_user_status)
     context.user_data.clear()
     await update.effective_message.reply_text(msg.ASK_SOURCE)
     return WAIT_SOURCE
@@ -148,9 +162,11 @@ async def on_describe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         try:
             template = await svc.compiler.compile(text)
         except LLMError as exc:
+            svc.store.record_usage(update.effective_user.id, "llm", 1, detail="failed")
             await update.effective_message.reply_text(
                 msg.COMPILE_FAILED.format(err=str(exc)[:300]))
             return WAIT_DESCRIBE
+        svc.store.record_usage(update.effective_user.id, "llm", 1, detail=text[:60])
     context.user_data[K_DESC] = text
     context.user_data[K_TEMPLATE] = template.model_dump()
     await update.effective_message.reply_text(
@@ -187,8 +203,10 @@ async def on_adjust(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             feedback=feedback,
             previous=_pending_template(context))
     except LLMError as exc:
+        svc.store.record_usage(update.effective_user.id, "llm", 1, detail="failed")
         await update.effective_message.reply_text(msg.COMPILE_FAILED.format(err=str(exc)[:300]))
         return WAIT_ADJUST
+    svc.store.record_usage(update.effective_user.id, "llm", 1, detail=feedback[:60])
     context.user_data[K_TEMPLATE] = template.model_dump()
     await update.effective_message.reply_text(
         msg.TEMPLATE_CONFIRM.format(summary=template_summary(template)),
@@ -251,8 +269,10 @@ async def on_interval_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer()
     minutes = int(query.data.split(":", 1)[1])
     svc = _svc(context)
-    if len(svc.store.list_subscriptions(user_id=update.effective_user.id)) >= MAX_SUBS_PER_USER:
-        await _edit(query, msg.SUBS_LIMIT.format(n=MAX_SUBS_PER_USER))
+    user = update.effective_user
+    cap = (svc.store.get_user(user.id) or {}).get("max_subs") or MAX_SUBS_PER_USER
+    if len(svc.store.list_subscriptions(user_id=user.id)) >= cap:
+        await _edit(query, msg.SUBS_LIMIT.format(n=cap))
         context.user_data.clear()
         return ConversationHandler.END
     template = _pending_template(context)
@@ -278,6 +298,9 @@ async def on_interval_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _require_private(update):
         await update.effective_message.reply_text(msg.PRIVATE_ONLY.format(cmd="/list"))
+        return
+    if _blocked(context, update.effective_user.id):
+        await update.effective_message.reply_text(msg.BLOCKED)
         return
     subs = _svc(context).store.list_subscriptions(user_id=update.effective_user.id)
     if not subs:
@@ -319,6 +342,9 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     svc = _svc(context)
     user_id = update.effective_user.id
+    if _blocked(context, user_id):
+        await update.effective_message.reply_text(msg.BLOCKED)
+        return
     args = context.args or []
     subs = svc.store.list_subscriptions(user_id=user_id)
     if not subs:

@@ -77,3 +77,52 @@ def test_logs_recorded(tmp_path):
     store.log(3, "delivered", "2 hits")
     rows = store._query("SELECT * FROM logs")
     assert rows[0]["kind"] == "delivered" and rows[0]["sub_id"] == 3
+
+
+def test_usage_recording_and_aggregates(tmp_path):
+    store = _store(tmp_path)
+    store.record_usage(1, "jev", 3, sub_id=9)
+    store.record_usage(1, "jev", 2)
+    store.record_usage(2, "jev", 5)
+    store.record_usage(1, "llm", 1, detail="desc")
+    assert store.usage_sum(user_id=1, kind="jev") == 5
+    assert store.usage_sum(kind="jev") == 10
+    assert store.usage_by_kind(user_id=1) == {"jev": 5, "llm": 1}
+    rows = store.usage_rows()
+    assert {(r["user_id"], r["kind"], r["s"]) for r in rows} == {
+        (1, "jev", 5), (2, "jev", 5), (1, "llm", 1)}
+    assert store.recent_usage(user_id=1, limit=1)[0]["detail"] == "desc"
+
+
+def test_user_fields_and_counts(tmp_path):
+    store = _store(tmp_path)
+    store.add_user(1, "a", default_status="blocked")
+    assert store.get_user(1)["status"] == "blocked"
+    store.set_user_fields(1, status="active", max_subs=3,
+                          quota_jev_monthly=100, note="vip")
+    user = store.get_user(1)
+    assert (user["status"], user["max_subs"],
+            user["quota_jev_monthly"], user["note"]) == ("active", 3, 100, "vip")
+    assert store.count_users() == {"total": 1, "active": 1, "blocked": 0}
+    store.add_subscription(user_id=1, source="c", template=make_template(),
+                           dest_kind="dm", dest_chat_id=1, dest_title="私聊",
+                           interval_minutes=20, last_seen_id=1)
+    assert store.count_subscriptions() == {"total": 1, "enabled": 1}
+    assert store.count_subscriptions_for(1) == 1
+
+
+def test_migration_adds_new_user_columns(tmp_path):
+    """旧库（无 status/配额列）初始化时自动迁移。"""
+    import sqlite3
+
+    path = str(tmp_path / "old.db")
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT,"
+                 " created_at TEXT NOT NULL)")
+    conn.execute("INSERT INTO users(id, username, created_at) VALUES(1, 'old', '2026-01-01')")
+    conn.commit()
+    conn.close()
+    store = Store(path)
+    user = store.get_user(1)
+    assert user["status"] == "active" and user["max_subs"] is None
+    assert user["quota_jev_monthly"] is None

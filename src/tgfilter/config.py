@@ -28,6 +28,12 @@ def _float(name: str, default: float) -> float:
         return default
 
 
+def _ids(name: str) -> tuple[int, ...]:
+    """逗号（或分号）分隔的 Telegram 用户 id 列表。"""
+    raw = _env(name).replace(";", ",")
+    return tuple(int(part) for part in (p.strip() for p in raw.split(",")) if part.isdigit())
+
+
 @dataclass(frozen=True)
 class Settings:
     bot_token: str = ""
@@ -43,6 +49,8 @@ class Settings:
     http_timeout: float = 30.0
     fetch_page_delay: float = 0.6
     digest_chunk_limit: int = 3800
+    admin_user_ids: tuple[int, ...] = ()
+    default_user_status: str = "active"
 
     @classmethod
     def load(cls) -> "Settings":
@@ -60,6 +68,8 @@ class Settings:
             http_timeout=_float("HTTP_TIMEOUT", 30.0),
             fetch_page_delay=_float("FETCH_PAGE_DELAY", 0.6),
             digest_chunk_limit=_int("DIGEST_CHUNK_LIMIT", 3800),
+            admin_user_ids=_ids("ADMIN_USER_IDS"),
+            default_user_status=_env("DEFAULT_USER_STATUS", "active") or "active",
         )
 
     @property

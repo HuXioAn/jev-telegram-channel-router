@@ -97,6 +97,7 @@ DEST_USER_NOT_ADMIN = (
     "❌ 你现在不是「{title}」的管理员，无法把消息发到该频道。"
     "如果你已被移出管理员，请重新添加后再试。")
 SUBS_LIMIT = "⚠️ 每人最多 {n} 个订阅，你已达到上限。请先删除不用的订阅（/list）。"
+BLOCKED = "⛔ 你的使用权限已被暂停。如需恢复请联系管理员。"
 
 
 def sub_line(sub: dict, template) -> str:
