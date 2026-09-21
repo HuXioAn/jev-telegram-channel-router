@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Jev Telegram Channel Router Logo" width="200">
+</p>
+
 # Jev Telegram Channel Router（中文版）
 
 [![CI](https://github.com/HuXioAn/jev-telegram-channel-router/actions/workflows/ci.yml/badge.svg)](https://github.com/HuXioAn/jev-telegram-channel-router/actions/workflows/ci.yml)
