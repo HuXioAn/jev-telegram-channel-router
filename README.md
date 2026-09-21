@@ -167,8 +167,10 @@ tail -f data/bot.log              # 日志（追加写入）
 ## 测试
 
 ```bash
-pytest -q              # 全部离线单测：模型/解析/抓取分页/Jev 重试/编译/存储/管线
-python scripts/smoke_live.py <频道>   # 冒烟：真网络（t.me + Jev）
+pytest -q              # 离线单测：模型/解析/抓取分页/Jev 重试/编译/存储/管线/处理器
+python scripts/smoke_live.py <频道>        # 冒烟：真网络（t.me + Jev），无需 bot token
+python scripts/e2e_wizard.py <user_id>     # 向导端到端：合成 Update 驱动真实 bot（真发到 DM）
+python scripts/e2e_commands.py <user_id>   # 全功能覆盖：命令/向导分支/按钮/频道事件/错误兜底
 ```
 
 无 bot token 时，除「Telegram 收发」外的一切均可离线验证；拿到 token 后 `/start` 即可端到端跑通。

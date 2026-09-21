@@ -34,6 +34,15 @@ def _pending_template(context: ContextTypes.DEFAULT_TYPE) -> Template:
     return Template.model_validate(context.user_data[K_TEMPLATE])
 
 
+async def _edit(query, text: str, reply_markup=None) -> None:
+    """编辑消息；内容与现状完全一致时 Telegram 会报 'not modified'，静默忽略。"""
+    try:
+        await query.edit_message_text(text, reply_markup=reply_markup)
+    except TelegramError as exc:
+        if "not modified" not in str(exc).lower():
+            raise
+
+
 # ------------------------------------------------------------------ 基础命令
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -124,13 +133,13 @@ async def on_template_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer()
     action = query.data.split(":", 1)[1]
     if action == "redo":
-        await query.edit_message_text(msg.ASK_DESCRIBE)
+        await _edit(query, msg.ASK_DESCRIBE)
         return WAIT_DESCRIBE
     if action == "adjust":
-        await query.edit_message_text(msg.ASK_ADJUST)
+        await _edit(query, msg.ASK_ADJUST)
         return WAIT_ADJUST
     chats = _svc(context).store.list_chats(added_by=update.effective_user.id)
-    await query.edit_message_text(msg.ASK_DEST, reply_markup=dest_kb(chats))
+    await _edit(query, msg.ASK_DEST, reply_markup=dest_kb(chats))
     return WAIT_DEST
 
 
@@ -163,7 +172,7 @@ async def on_dest_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user = update.effective_user
     data = query.data
     if data == "dst:refresh":
-        await query.edit_message_text(
+        await _edit(query, 
             msg.ASK_DEST, reply_markup=dest_kb(svc.store.list_chats(added_by=user.id)))
         return WAIT_DEST
     if data == "dst:dm":
@@ -179,15 +188,15 @@ async def on_dest_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             member = await context.bot.get_chat_member(chat_id, context.bot.id)
         except TelegramError:
             member = None
-        if member is None or member.status not in (ChatMember.ADMINISTRATOR, ChatMember.CREATOR):
-            await query.edit_message_text(
+        if member is None or member.status not in (ChatMember.ADMINISTRATOR, ChatMember.OWNER):
+            await _edit(query, 
                 f"{msg.DEST_CHANNEL_INVALID.format(title=title)}\n\n{msg.ASK_DEST}",
                 reply_markup=dest_kb(svc.store.list_chats(added_by=user.id)))
             return WAIT_DEST
         context.user_data["dest_kind"] = "channel"
         context.user_data["dest_chat_id"] = chat_id
         context.user_data["dest_title"] = title
-    await query.edit_message_text(msg.ASK_INTERVAL, reply_markup=interval_kb())
+    await _edit(query, msg.ASK_INTERVAL, reply_markup=interval_kb())
     return WAIT_INTERVAL
 
 
@@ -208,7 +217,7 @@ async def on_interval_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
         interval_minutes=minutes,
         last_seen_id=context.user_data.get(K_HEAD),
     )
-    await query.edit_message_text(msg.SUB_CREATED.format(
+    await _edit(query, msg.SUB_CREATED.format(
         sub_id=sub_id, source=source, rule=match_summary(template),
         dest=context.user_data["dest_title"], interval=minutes))
     context.user_data.clear()
@@ -235,20 +244,20 @@ async def on_sub_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     sub_id = int(raw_id)
     sub = svc.store.get_subscription(sub_id)
     if sub is None or sub["user_id"] != user_id:
-        await query.edit_message_text(msg.TEST_SUB_NOT_FOUND.format(sub_id=sub_id))
+        await _edit(query, msg.TEST_SUB_NOT_FOUND.format(sub_id=sub_id))
         return
     if action in ("pause", "resume"):
         svc.store.set_subscription(sub_id, enabled=1 if action == "resume" else 0)
         sub = svc.store.get_subscription(sub_id) or sub
-        await query.edit_message_text(msg.sub_line(sub, template_of(sub)),
+        await _edit(query, msg.sub_line(sub, template_of(sub)),
                                       reply_markup=sub_actions_kb(sub))
     elif action == "delete":
         svc.store.delete_subscription(sub_id)
-        await query.edit_message_text(f"🗑 订阅 #{sub_id} 已删除。")
+        await _edit(query, f"🗑 订阅 #{sub_id} 已删除。")
     elif action == "test":
-        await query.edit_message_text(msg.TESTING)
+        await _edit(query, msg.TESTING)
         result = await svc.pipeline.preview(sub, pool=100, limit=6)
-        await query.edit_message_text(msg.test_result(result, sub, template_of(sub)))
+        await _edit(query, msg.test_result(result, sub, template_of(sub)))
 
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -297,7 +306,7 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
     status = change.new_chat_member.status
     store = _svc(context).store
-    adminish = status in (ChatMember.ADMINISTRATOR, ChatMember.CREATOR)
+    adminish = status in (ChatMember.ADMINISTRATOR, ChatMember.OWNER)
     can_post = adminish if chat.type == ChatType.CHANNEL else (
         adminish or status == ChatMember.MEMBER)
     if can_post:
