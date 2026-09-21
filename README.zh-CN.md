@@ -43,7 +43,7 @@
 ## 快速开始
 
 ```bash
-git clone git@github.com:HuXioAn/jev-telegram-channel-router.git
+git clone https://github.com/HuXioAn/jev-telegram-channel-router.git
 cd jev-telegram-channel-router
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
