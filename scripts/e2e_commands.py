@@ -216,20 +216,19 @@ async def main() -> None:
                     _callback(user_id, confirm, f"md:ch:new:{FAKE_CHAT_ID}"))
         _check("非管理员被拦下（无报错、未进入下一步）",
                not any("出错了" in t for t in _new_texts(mark))
-               and not any("检查频率" in t for t in _new_texts(mark)))
+               and not any("已创建" in t for t in _new_texts(mark)))
         _state["fake_member"] = ChatMemberOwner(user=bot_user, is_anonymous=False)
         await _step(app, "选择「测试频道」——模拟管理员（应通过）",
                     _callback(user_id, confirm, f"md:ch:new:{FAKE_CHAT_ID}"))
         _state["fake_member"] = None
-        await _step(app, "点击「✅ 完成」（目的地）",
+        await _step(app, "点击「✅ 完成」（目的地）→ 直接创建",
                     _callback(user_id, confirm, "md:done:new"))
-        await _step(app, "点击「60 分钟」", _callback(user_id, confirm, "iv:60"))
         sid = next((int(m.text.split("#", 2)[1].split(" ", 1)[0])
                     for _, m in reversed(_state["outbox"])
                     if m.text and m.text.startswith("✅ 订阅 #")), None)
         sub2 = store.get_subscription(sid) if sid else None
-        _check("订阅已创建（dest=测试频道, 60 分钟）",
-               sub2 is not None and sub2["interval_minutes"] == 60
+        _check("订阅已创建（dest=测试频道）",
+               sub2 is not None and sub2["enabled"] == 1
                and [(d["kind"], d["chat_id"]) for d in sub2["dests"]]
                == [("channel", FAKE_CHAT_ID)])
 
@@ -263,7 +262,7 @@ async def main() -> None:
         await _step(app, "点击「使用这个模板」", _callback(user_id, confirm4, "tpl:confirm"))
         await _step(app, "点击「📬 加私聊」（DM 分支）",
                     _callback(user_id, confirm4, "md:dm:new"))
-        await _step(app, "/cancel（频率选择前取消）", CMD("/cancel"))
+        await _step(app, "/cancel（创建前取消）", CMD("/cancel"))
         _check("取消后未产生新订阅",
                len(store.list_subscriptions(user_id=user_id)) == 1)
 
@@ -298,9 +297,11 @@ async def main() -> None:
         print("\\n[数据库终态]")
         print("  订阅:", [(s["id"], [x["source"] for x in s["sources"]],
                         [(d["kind"], d["chat_id"]) for d in s["dests"]],
-                        s["enabled"], s["interval_minutes"])
+                        s["enabled"])
                        for s in store.list_subscriptions(user_id=user_id)])
         print("  频道:", store.list_chats())
+        print("  调度:", [(w["channel"], w["interval_minutes"], w["last_seen_id"])
+                        for w in store.list_watches()])
     finally:
         ExtBot.send_message, ExtBot.edit_message_text = original_send, original_edit
         ExtBot.get_chat_member = original_member

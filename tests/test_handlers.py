@@ -10,6 +10,7 @@ from telegram import (CallbackQuery, Chat, ChatMemberAdministrator,
 
 from conftest import make_template
 from tgfilter.bot import handlers as h
+from tgfilter.config import Settings
 from tgfilter.store import Store
 
 BOT_ID = 8884453670
@@ -96,7 +97,8 @@ def _make(tmp_path):
     store = Store(str(tmp_path / "test.db"))
     bot = FakeBot()
     context = SimpleNamespace(
-        application=SimpleNamespace(bot_data={"services": SimpleNamespace(store=store)}),
+        application=SimpleNamespace(bot_data={
+            "services": SimpleNamespace(store=store, settings=Settings())}),
         bot=bot, user_data={})
     return store, bot, context
 
@@ -265,9 +267,12 @@ async def test_subscription_cap_per_user(tmp_path):
         store.add_subscription(user_id=USER_ID, source=f"c{index}", template=template,
                                dest_kind="dm", dest_chat_id=USER_ID, dest_title="私聊",
                                interval_minutes=20, last_seen_id=1)
-    update = _cb_update("iv:20")
+    context.user_data["sources"] = [{"source": "chan_new", "head_id": 500}]
+    context.user_data["dests"] = [{"kind": "dm", "chat_id": USER_ID, "title": "私聊"}]
+    context.user_data[h.K_TEMPLATE] = template.model_dump()
+    update = _cb_update("md:done:new")
     _attach_bot(update, bot)
-    state = await h.on_interval_choice(update, context)
+    state = await h.on_dest_manager(update, context)
     assert state == h.ConversationHandler.END
     assert any("上限" in text for text in bot.edited)
     assert len(store.list_subscriptions(user_id=USER_ID)) == h.MAX_SUBS_PER_USER
@@ -424,11 +429,7 @@ async def test_create_flow_multi_sources_and_dests(tmp_path):
 
     update = _cb_update("md:done:new")
     _attach_bot(update, bot)
-    assert await h.on_dest_manager(update, context) == h.WAIT_INTERVAL
-
-    update = _cb_update("iv:30")
-    _attach_bot(update, bot)
-    assert await h.on_interval_choice(update, context) == h.ConversationHandler.END
+    assert await h.on_dest_manager(update, context) == h.ConversationHandler.END
 
     subs = store.list_subscriptions(user_id=USER_ID)
     assert len(subs) == 1
@@ -436,23 +437,23 @@ async def test_create_flow_multi_sources_and_dests(tmp_path):
     assert [s["source"] for s in sub["sources"]] == ["chan_a", "chan_b"]
     assert [s["last_seen_id"] for s in sub["sources"]] == [500, 500]  # 从头部起
     assert [d["chat_id"] for d in sub["dests"]] == [CHAT_ID, USER_ID]
-    assert sub["interval_minutes"] == 30
+    assert sub["interval_minutes"] == services.settings.default_interval_minutes
+    assert sub["enabled"] == 1
+    assert any("已创建" in text for text in bot.edited)
 
 
 # ------------------------------------------------------------------ 编辑流程
-async def test_edit_menu_and_interval(tmp_path):
-    """✏️ 编辑 → 修改频率即时生效。"""
+async def test_edit_menu_offers_source_dest_template(tmp_path):
+    """✏️ 编辑 → 编辑菜单：源频道 / 目的地 / 筛选模板（频率已取消）。"""
     store, bot, context, sub_id = _edit_env(tmp_path)
     update = _cb_update(f"sub:edit:{sub_id}")
     _attach_bot(update, bot)
     await h.on_sub_action(update, context)
     assert any("编辑订阅" in text for text in bot.edited)
-
-    update = _cb_update(f"eivs:{sub_id}:60")
-    _attach_bot(update, bot)
-    await h.on_edit_interval_set(update, context)
-    assert store.get_subscription(sub_id)["interval_minutes"] == 60
-    assert any("已更新" in text for text in bot.edited)
+    datas = _kb_datas(bot.edited_markups[-1])
+    assert f"ms:menu:{sub_id}" in datas and f"md:menu:{sub_id}" in datas
+    assert f"etpl:{sub_id}" in datas
+    assert not any(data.startswith("eiv") for data in datas)
 
 
 async def test_edit_template_overwrites(tmp_path):

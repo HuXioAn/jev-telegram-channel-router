@@ -13,9 +13,9 @@ from telegram.ext import ContextTypes
 from ..store import month_start
 from .handlers import _require_private, _svc
 
-_KIND_ORDER = ("jev", "llm", "run", "fetch", "deliver")
-_KIND_LABEL = {"jev": "Jev判定", "llm": "LLM编译", "run": "执行",
-               "fetch": "抓取", "deliver": "推送"}
+_KIND_ORDER = ("jev", "consumed", "llm", "run", "fetch", "deliver")
+_KIND_LABEL = {"jev": "Jev判定", "consumed": "判定消费", "llm": "LLM编译",
+               "run": "执行", "fetch": "抓取", "deliver": "推送"}
 
 HELP_TEXT = (
     "🛠 管理员命令\n"
@@ -23,9 +23,11 @@ HELP_TEXT = (
     "/admin users [n] — 用户列表（默认 30）\n"
     "/admin user <id> — 用户详情（用量、配额、订阅）\n"
     "/admin usage [days] — 按用户用量汇总（默认 30 天）\n"
+    "/admin watches — 频道刷新调度（间隔/游标/订阅数）\n"
+    "/admin watch <频道> <分钟> — 调整某频道刷新间隔\n"
     "/admin block <id> 或 unblock <id> — 停用 / 恢复\n"
     "/admin quota <id> sub <n> — 订阅数上限（0=恢复默认）\n"
-    "/admin quota <id> jev <n> — 每月 Jev 判定配额（0=不限）\n"
+    "/admin quota <id> jev <n> — 每月判定配额（0=不限）\n"
     "/admin note <id> <备注>"
 )
 
@@ -68,6 +70,14 @@ def _uid(args: list[str], index: int) -> int:
     return int(args[index])
 
 
+def _uname(store, uid: int) -> str:
+    """展示名：0 = 系统（频道共享记账），其余取用户名。"""
+    if uid == 0:
+        return "🛰 频道共享（系统）"
+    user = store.get_user(uid) or {}
+    return f"@{user['username']}" if user.get("username") else ""
+
+
 async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     svc = _svc(context)
@@ -96,6 +106,10 @@ async def _dispatch(svc, context, args: list[str]) -> str:
     if cmd == "usage":
         days = int(args[1]) if len(args) > 1 and args[1].isdigit() else 30
         return _usage_summary(svc, days=min(max(days, 1), 365))
+    if cmd == "watches":
+        return _watches(svc)
+    if cmd == "watch":
+        return _set_watch(svc, args)
     if cmd in ("block", "unblock"):
         return await _set_status(svc, context, cmd, _uid(args, 1))
     if cmd == "quota":
@@ -136,10 +150,40 @@ def _overview(svc) -> str:
         lines.append("")
         lines.append("🏆 30 天用量 Top 5：")
         for uid, counts in ranked:
-            user = store.get_user(uid) or {}
-            name = f"@{user['username']}" if user.get("username") else ""
-            lines.append(f"· {uid} {name} — {_fmt_rollup(counts)}")
+            lines.append(f"· {uid} {_uname(store, uid)} — {_fmt_rollup(counts)}")
     return "\n".join(lines)
+
+
+def _watches(svc) -> str:
+    """频道刷新调度列表。"""
+    store = svc.store
+    lines = ["📡 频道刷新调度", ""]
+    rows = store.list_watches()
+    for row in rows:
+        watchers = len(store.watchers_of(row["channel"]))
+        last = (str(row["last_fetch_at"])[5:16].replace("T", " ")
+                if row["last_fetch_at"] else "未抓取")
+        cursor = row["last_seen_id"] if row["last_seen_id"] is not None else "—"
+        lines.append(f"· @{row['channel']}｜每 {row['interval_minutes']} 分钟"
+                     f"｜订阅 {watchers}｜游标 {cursor}｜上次 {last}")
+    if not rows:
+        lines.append("（无）")
+    lines.append("")
+    lines.append("调整：/admin watch <频道> <分钟>")
+    return "\n".join(lines)
+
+
+def _set_watch(svc, args: list[str]) -> str:
+    if len(args) < 3:
+        raise ValueError("用法：/admin watch <频道> <分钟>")
+    channel = args[1].lstrip("@").strip()
+    if not args[2].isdigit() or int(args[2]) < 1:
+        raise ValueError("分钟数应为正整数")
+    if not svc.store.get_watch(channel):
+        return f"❌ 没有在观察的频道 {channel}（用 /admin watches 查看）"
+    minutes = int(args[2])
+    svc.store.set_watch_interval(channel, minutes)
+    return f"✅ 已设置 @{channel}：每 {minutes} 分钟刷新。"
 
 
 def _users(svc, limit: int) -> str:
@@ -169,10 +213,10 @@ def _user_detail(svc, uid: int) -> str:
     lines.append(f"状态：{'⛔ 已停用' if user['status'] == 'blocked' else '✅ 活跃'}"
                  f"｜注册：{str(user['created_at'])[:10]}")
     lines.append(f"配额：订阅上限 {user['max_subs'] or '默认'}"
-                 f"｜月 Jev 判定 {user['quota_jev_monthly'] or '不限'}")
+                 f"｜月判定额度 {user['quota_jev_monthly'] or '不限'}")
     if user["quota_jev_monthly"]:
-        used = store.usage_sum(user_id=uid, kind="jev", since=month_start(now))
-        lines.append(f"本月 Jev 已用：{used} / {user['quota_jev_monthly']}")
+        used = store.usage_sum(user_id=uid, kind="consumed", since=month_start(now))
+        lines.append(f"本月判定已消费：{used} / {user['quota_jev_monthly']}")
     month_rollup = store.usage_rollup(user_id=uid, since=month_start(now))
     month_in = sum(item["in"] for item in month_rollup.values())
     month_out = sum(item["out"] for item in month_rollup.values())
@@ -188,8 +232,7 @@ def _user_detail(svc, uid: int) -> str:
         sources = "、".join("@" + item["source"] for item in sub["sources"][:3]) or "（无）"
         dests = "、".join(item["title"] or str(item["chat_id"])
                           for item in sub["dests"][:3]) or "（无）"
-        lines.append(f"· #{sub['id']} {mark} {sources} → {dests}"
-                     f"｜每 {sub['interval_minutes']} 分钟")
+        lines.append(f"· #{sub['id']} {mark} {sources} → {dests}")
     if not subs:
         lines.append("（无）")
     lines.append("")
@@ -224,9 +267,7 @@ def _usage_summary(svc, days: int) -> str:
     lines = [f"📊 用量汇总（最近 {days} 天｜用户 {len(ranked)}"
              f"｜合计 {_fmt_rollup(total)}）", ""]
     for uid, counts in ranked[:20]:
-        user = store.get_user(uid) or {}
-        name = f"@{user['username']}" if user.get("username") else ""
-        lines.append(f"· {uid} {name} — {_fmt_rollup(counts)}")
+        lines.append(f"· {uid} {_uname(store, uid)} — {_fmt_rollup(counts)}")
     if not ranked:
         lines.append("（无记录）")
     return "\n".join(lines)

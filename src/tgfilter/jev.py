@@ -24,11 +24,16 @@ class JevClient:
         self._sleep = asyncio.sleep  # 可注入（测试）
 
     async def classify(self, text: str, template: Template) -> dict[str, Any]:
-        """判定一条消息。返回 {"answers": {...}, "usage": {...}}，失败为 {"error": ...}。"""
+        """判定一条消息（按模板问题集）。返回 {"answers": {...}, "usage": {...}}，失败为 {"error": ...}。"""
+        return await self.classify_questions(text, template.jev_questions())
+
+    async def classify_questions(self, text: str,
+                                 questions: dict[str, dict]) -> dict[str, Any]:
+        """按给定问题集判定一条消息（联合判定的底层调用）。"""
         payload = {
             "state": text,
             "model": "jev-latest",
-            "questions": template.jev_questions(),
+            "questions": questions,
         }
         headers = {"Authorization": f"Bearer {self._api_key}"}
         async with self._sem:

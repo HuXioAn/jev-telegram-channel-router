@@ -82,29 +82,89 @@ def test_sub_sources_and_dests_n_to_n(tmp_path):
     assert [d["chat_id"] for d in sub["dests"]] == [-1005, -1006]
 
 
-def test_due_subscriptions_respects_interval_and_enabled(tmp_path):
+def test_watches_materialize_due_and_retire(tmp_path):
+    """频道级调度：物化（最小游标/最小间隔）、到期判定、退役与重物化。"""
     store = _store(tmp_path)
-    sub_id = store.add_subscription(user_id=1, source="chan", template=make_template(),
-                                    dest_kind="dm", dest_chat_id=1, dest_title="私聊",
-                                    interval_minutes=20, last_seen_id=100)
+    store.add_subscription(user_id=1, source="chan", template=make_template(),
+                           dest_kind="dm", dest_chat_id=1, dest_title="私聊",
+                           interval_minutes=20, last_seen_id=100)
+    b_id = store.add_subscription(user_id=2, source="chan", template=make_template(),
+                                  dest_kind="dm", dest_chat_id=2, dest_title="私聊",
+                                  interval_minutes=10, last_seen_id=150)
+    store.sync_watches(20)
+    watch = store.get_watch("chan")
+    assert watch["last_seen_id"] == 100            # 最小游标（不丢消息）
+    assert watch["interval_minutes"] == 10         # 最小间隔
+
     now = datetime.now(timezone.utc)
-    assert [s["id"] for s in store.due_subscriptions(now)] == [sub_id]  # 从未跑过 → 到期
-    store.mark_run(sub_id, 120)
-    assert store.due_subscriptions(now) == []  # 刚跑过
-    later = now + timedelta(minutes=21)
-    assert [s["id"] for s in store.due_subscriptions(later)] == [sub_id]
-    store.set_subscription(sub_id, enabled=0)
-    assert store.due_subscriptions(later) == []  # 暂停后不再到期
+    assert [w["channel"] for w in store.due_watches(now)] == ["chan"]  # 从未抓过 → 到期
+    store.mark_watch_fetched("chan", 160, when=now.isoformat())
+    assert store.due_watches(now) == []
+    later = [w["channel"] for w in store.due_watches(now + timedelta(minutes=10))]
+    assert later == ["chan"]
+    watch = store.get_watch("chan")
+    assert watch["last_seen_id"] == 160 and watch["last_fetch_at"]
+
+    store.set_watch_interval("chan", 5)
+    assert store.get_watch("chan")["interval_minutes"] == 5
+    assert store.due_watches(now + timedelta(minutes=5))[0]["channel"] == "chan"
+
+    store.set_subscription(b_id, enabled=0)        # 暂停不再算观察者
+    store.sync_watches(20)
+    assert store.get_watch("chan")["interval_minutes"] == 5   # 已有间隔不覆盖
+
+    store.delete_subscription(b_id)
+    store.delete_subscription(1)
+    store.sync_watches(20)
+    assert store.get_watch("chan") is None         # 无 enabled 观察者 → 退役
+    store.add_subscription(user_id=3, source="chan", template=make_template(),
+                           dest_kind="dm", dest_chat_id=3, dest_title="私聊",
+                           interval_minutes=20, last_seen_id=200)
+    store.sync_watches(20)
+    assert store.get_watch("chan")["last_seen_id"] == 200      # 重物化
 
 
-def test_mark_run_updates_cursor_and_time(tmp_path):
+def test_store_reopen_materializes_watches(tmp_path):
+    """旧库升级：重新打开时把既有订阅的源频道物化成 watches。"""
+    path = str(tmp_path / "test.db")
+    store = Store(path)
+    store.add_subscription(user_id=1, source="chan", template=make_template(),
+                           dest_kind="dm", dest_chat_id=1, dest_title="私聊",
+                           interval_minutes=15, last_seen_id=100)
+    reopened = Store(path)
+    watch = reopened.get_watch("chan")
+    assert watch["last_seen_id"] == 100 and watch["interval_minutes"] == 15
+
+
+def test_judgments_cache_roundtrip_and_prune(tmp_path):
     store = _store(tmp_path)
-    sub_id = store.add_subscription(user_id=1, source="chan", template=make_template(),
-                                    dest_kind="dm", dest_chat_id=1, dest_title="私聊",
-                                    interval_minutes=20, last_seen_id=100)
-    store.mark_run(sub_id, 333)
-    sub = store.get_subscription(sub_id)
-    assert sub["sources"][0]["last_seen_id"] == 333 and sub["last_run_at"]
+    payload = {"tfp1": {"china": {"type": "noul", "noul": 0.9}}}
+    store.save_judgment("chan", 101, payload)
+    assert store.judgments_for("chan", [101, 102]) == {101: payload}
+    store.save_judgment("chan", 101, {"tfp1": {"china": None}})   # 覆盖
+    assert store.judgments_for("chan", [101]) == {101: {"tfp1": {"china": None}}}
+    assert store.judgments_for("other", [101]) == {}
+    old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    store._run("UPDATE judgments SET ts=?", (old,))
+    assert store.prune_judgments(days=7) == 1
+    assert store.judgments_for("chan", [101]) == {}
+
+
+def test_watchers_of_only_enabled(tmp_path):
+    store = _store(tmp_path)
+    a = store.add_subscription(user_id=1, source="chan", template=make_template(),
+                               dest_kind="dm", dest_chat_id=1, dest_title="私聊",
+                               interval_minutes=20, last_seen_id=100)
+    store.add_subscription(user_id=2, source="chan", template=make_template(),
+                           dest_kind="dm", dest_chat_id=2, dest_title="私聊",
+                           interval_minutes=20, last_seen_id=100)
+    store.add_subscription(user_id=3, source="other", template=make_template(),
+                           dest_kind="dm", dest_chat_id=3, dest_title="私聊",
+                           interval_minutes=20, last_seen_id=100)
+    assert [w["user_id"] for w in store.watchers_of("chan")] == [1, 2]
+    store.set_subscription(a, enabled=0)
+    assert [w["user_id"] for w in store.watchers_of("chan")] == [2]
+    assert store.watchers_of("nothing") == []
 
 
 def test_logs_recorded(tmp_path):

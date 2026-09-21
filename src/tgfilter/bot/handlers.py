@@ -13,14 +13,15 @@ from ..channel_fetch import ChannelError, normalize_channel_ref
 from ..formatting import match_summary, template_summary
 from ..llm import LLMError
 from ..models import Template
+from ..services import Services
 from ..store import template_of
-from .keyboards import (back_list_kb, dest_manager_kb, edit_interval_kb,
-                        edit_menu_kb, interval_kb, main_menu_kb, src_manager_kb,
+from .keyboards import (back_list_kb, dest_manager_kb,
+                        edit_menu_kb, main_menu_kb, src_manager_kb,
                         sub_actions_kb, sub_pick_kb, template_kb)
 
 logger = logging.getLogger(__name__)
 
-WAIT_SOURCE, WAIT_DESCRIBE, CONFIRM_TEMPLATE, WAIT_ADJUST, WAIT_DEST, WAIT_INTERVAL = range(6)
+WAIT_SOURCE, WAIT_DESCRIBE, CONFIRM_TEMPLATE, WAIT_ADJUST, WAIT_DEST = range(5)
 
 K_DESC = "pending_desc"
 K_TEMPLATE = "pending_template"
@@ -438,8 +439,9 @@ async def on_dest_manager(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await query.answer(msg.NEED_ONE_DEST, show_alert=True)
                 return WAIT_DEST
             await query.answer()
-            await _edit(query, msg.ASK_INTERVAL, reply_markup=interval_kb())
-            return WAIT_INTERVAL
+            outcome = await _finish_new(query, context, svc, user)
+            context.user_data.clear()
+            return outcome
         await query.answer("已刷新" if op == "refresh" else None)
         await _edit(query, _dest_text_new(dests),
                     reply_markup=_dest_kb_new(svc, user.id, dests))
@@ -483,42 +485,30 @@ async def on_dest_manager(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return ConversationHandler.END
 
 
-async def on_interval_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    minutes = int(query.data.split(":", 1)[1])
-    svc = _svc(context)
-    user = update.effective_user
+async def _finish_new(query, context: ContextTypes.DEFAULT_TYPE, svc: Services,
+                      user) -> int:
+    """新建向导收尾：源/目的地齐备即建订阅（刷新节奏由频道级调度统一负责）。"""
     cap = (svc.store.get_user(user.id) or {}).get("max_subs") or MAX_SUBS_PER_USER
     if len(svc.store.list_subscriptions(user_id=user.id)) >= cap:
-        await query.answer()
         await _edit(query, msg.SUBS_LIMIT.format(n=cap))
-        context.user_data.clear()
         return ConversationHandler.END
     sources = context.user_data.get("sources") or []
     dests = context.user_data.get("dests") or []
     if not sources:
-        await query.answer()
         await _edit(query, msg.NEED_ONE_SOURCE)
-        context.user_data.clear()
         return ConversationHandler.END
-    if not dests:
-        await query.answer()
-        await _edit(query, _dest_text_new(dests),
-                    reply_markup=_dest_kb_new(svc, user.id, dests))
-        return WAIT_DEST
-    await query.answer()
     template = _pending_template(context)
     sub_id = svc.store.add_subscription(
-        user_id=user.id, template=template, interval_minutes=minutes,
+        user_id=user.id, template=template,
+        interval_minutes=svc.settings.default_interval_minutes,
         sources=[{"source": item["source"], "last_seen_id": item.get("head_id")}
                  for item in sources],
         dests=dests)
     src_names = "、".join(f"@{item['source']}" for item in sources)
     dest_names = "、".join(d["title"] or str(d["chat_id"]) for d in dests)
-    context.user_data.clear()
     await _edit(query, msg.SUB_CREATED.format(
         sub_id=sub_id, sources=src_names, rule=match_summary(template),
-        dests=dest_names, interval=minutes))
+        dests=dest_names))
     return ConversationHandler.END
 
 
@@ -627,34 +617,6 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ---------------------------------------------------------------- 订阅编辑
-async def on_edit_interval(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """编辑订阅：频率选择面板。"""
-    query = update.callback_query
-    await query.answer()
-    _, raw_id = query.data.split(":")
-    sub = _owned_sub(_svc(context), update.effective_user.id, raw_id)
-    if sub is None:
-        await _edit(query, msg.TEST_SUB_NOT_FOUND.format(sub_id=raw_id))
-        return
-    await _edit(query, msg.EDIT_INTERVAL, reply_markup=edit_interval_kb(sub["id"]))
-
-
-async def on_edit_interval_set(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """编辑订阅：应用新频率并回到订阅视图。"""
-    query = update.callback_query
-    await query.answer()
-    _, raw_id, raw_minutes = query.data.split(":")
-    svc = _svc(context)
-    sub = _owned_sub(svc, update.effective_user.id, raw_id)
-    if sub is None:
-        await _edit(query, msg.TEST_SUB_NOT_FOUND.format(sub_id=raw_id))
-        return
-    svc.store.set_subscription(sub["id"], interval_minutes=int(raw_minutes))
-    sub = svc.store.get_subscription(sub["id"]) or sub
-    await _edit(query, f"{msg.EDIT_DONE}\n\n{msg.sub_line(sub, template_of(sub))}",
-                reply_markup=sub_actions_kb(sub))
-
-
 async def on_edit_template(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """编辑订阅：进入「重新描述筛选条件」流程（确认后覆盖模板）。"""
     query = update.callback_query

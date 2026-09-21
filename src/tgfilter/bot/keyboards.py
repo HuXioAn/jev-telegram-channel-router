@@ -43,22 +43,6 @@ def dest_manager_kb(ctx: str, dests: list[tuple[str, str]],
     return InlineKeyboardMarkup(rows)
 
 
-def interval_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"{m} 分钟", callback_data=f"iv:{m}") for m in (10, 20)],
-        [InlineKeyboardButton(f"{m} 分钟", callback_data=f"iv:{m}") for m in (30, 60)],
-    ])
-
-
-def edit_interval_kb(sub_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"{m} 分钟", callback_data=f"eivs:{sub_id}:{m}")
-         for m in (10, 20)],
-        [InlineKeyboardButton(f"{m} 分钟", callback_data=f"eivs:{sub_id}:{m}")
-         for m in (30, 60)],
-    ])
-
-
 def sub_actions_kb(sub: dict) -> InlineKeyboardMarkup:
     toggle_text, toggle_action = ("⏸ 暂停", "pause") if sub["enabled"] else ("▶️ 恢复", "resume")
     return InlineKeyboardMarkup([
@@ -92,7 +76,6 @@ def edit_menu_kb(sub_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📡 源频道", callback_data=f"ms:menu:{sub_id}"),
          InlineKeyboardButton("📬 目的地", callback_data=f"md:menu:{sub_id}")],
-        [InlineKeyboardButton("⏱ 频率", callback_data=f"eiv:{sub_id}"),
-         InlineKeyboardButton("🧩 筛选模板", callback_data=f"etpl:{sub_id}")],
+        [InlineKeyboardButton("🧩 筛选模板", callback_data=f"etpl:{sub_id}")],
         [InlineKeyboardButton("⬅️ 返回", callback_data=f"sub:show:{sub_id}")],
     ])

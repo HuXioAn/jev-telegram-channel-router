@@ -80,38 +80,44 @@ class PerChatUpdateProcessor(BaseUpdateProcessor):
         async with lock:
             await coroutine
 
-_running: set[int] = set()
-_last_notified: dict[int, datetime] = {}
+_running: set[str] = set()
+_last_notified: dict[str, datetime] = {}
 
 
-async def _execute(services: Services, sub: dict, bot: Bot) -> None:
+async def _execute_watch(services: Services, watch: dict, bot: Bot) -> None:
+    channel = watch["channel"]
     try:
-        result = await services.pipeline.run(sub)
+        result = await services.pipeline.run_watch(watch)
         if result.error:
-            logger.warning("subscription #%s: %s", sub["id"], result.error)
+            logger.warning("watch %s: %s", channel, result.error)
             now = datetime.now(timezone.utc)
-            last = _last_notified.get(sub["id"])
+            last = _last_notified.get(channel)
             if not last or (now - last).total_seconds() > ERROR_NOTIFY_COOLDOWN_SECONDS:
-                _last_notified[sub["id"]] = now
-                try:
-                    await bot.send_message(
-                        sub["user_id"], f"⚠️ 订阅 #{sub['id']} 运行出错：{result.error}")
-                except TelegramError:
-                    pass
+                _last_notified[channel] = now
+                for admin_id in services.settings.admin_user_ids:
+                    try:
+                        await bot.send_message(
+                            admin_id, f"⚠️ 频道 @{channel} 刷新出错：{result.error}")
+                    except TelegramError:
+                        pass
     except Exception:
-        logger.exception("subscription #%s crashed", sub["id"])
+        logger.exception("watch %s crashed", channel)
     finally:
-        _running.discard(sub["id"])
+        _running.discard(channel)
 
 
 async def _tick(context) -> None:
-    """每分钟扫一次到期订阅；每个订阅独立任务并发执行。"""
+    """每分钟扫一次到期的源频道；每个频道独立任务并发执行。"""
     services: Services = context.application.bot_data["services"]
-    for sub in services.store.due_subscriptions(datetime.now(timezone.utc)):
-        if sub["id"] in _running:
+    store = services.store
+    store.sync_watches(services.settings.default_interval_minutes)
+    store.prune_judgments()
+    for watch in store.due_watches(datetime.now(timezone.utc)):
+        channel = watch["channel"]
+        if channel in _running:
             continue
-        _running.add(sub["id"])
-        asyncio.create_task(_execute(services, sub, context.application.bot))
+        _running.add(channel)
+        asyncio.create_task(_execute_watch(services, watch, context.application.bot))
 
 
 def build_application(settings: Settings) -> Application:
@@ -123,7 +129,8 @@ def build_application(settings: Settings) -> Application:
                         settings.jev_concurrency)
         compiler = TemplateCompiler(http, settings) if settings.llm_enabled else None
         pipeline = Pipeline(store, fetcher, jev, Sender(app.bot),
-                            settings.digest_chunk_limit)
+                            settings.digest_chunk_limit,
+                            settings.judge_max_questions)
         app.bot_data["services"] = Services(settings, store, fetcher, jev, compiler, pipeline)
         app.bot_data["http"] = http
         try:
@@ -139,7 +146,7 @@ def build_application(settings: Settings) -> Application:
             except TelegramError:
                 logger.warning("set_my_commands(admin=%s) 失败", admin_id, exc_info=True)
         app.job_queue.run_repeating(_tick, interval=TICK_SECONDS, first=10,
-                                    name="due-subscriptions")
+                                    name="due-watches")
 
     async def post_shutdown(app: Application) -> None:
         http: httpx.AsyncClient | None = app.bot_data.get("http")
@@ -168,7 +175,6 @@ def build_application(settings: Settings) -> Application:
             h.CONFIRM_TEMPLATE: [CallbackQueryHandler(h.on_template_choice, pattern=r"^tpl:")],
             h.WAIT_ADJUST: [MessageHandler(filters.TEXT & ~filters.COMMAND, h.on_adjust)],
             h.WAIT_DEST: [CallbackQueryHandler(h.on_dest_manager, pattern=r"^md:")],
-            h.WAIT_INTERVAL: [CallbackQueryHandler(h.on_interval_choice, pattern=r"^iv:")],
         },
         fallbacks=[CommandHandler("cancel", h.cmd_cancel)],
         allow_reentry=True,
@@ -180,11 +186,9 @@ def build_application(settings: Settings) -> Application:
     app.add_handler(CommandHandler("admin", admin_handlers.cmd_admin))
     app.add_handler(CallbackQueryHandler(h.on_ui, pattern=r"^ui:(list|help)$"))
     app.add_handler(CallbackQueryHandler(h.on_sub_action, pattern=r"^sub:"))
-    # 订阅编辑（管理器/频率/模板；会话进行中时由会话内同名处理器先行接管）
+    # 订阅编辑（管理器/模板；会话进行中时由会话内同名处理器先行接管）
     app.add_handler(CallbackQueryHandler(h.on_src_manager, pattern=r"^ms:"))
     app.add_handler(CallbackQueryHandler(h.on_dest_manager, pattern=r"^md:"))
-    app.add_handler(CallbackQueryHandler(h.on_edit_interval, pattern=r"^eiv:"))
-    app.add_handler(CallbackQueryHandler(h.on_edit_interval_set, pattern=r"^eivs:"))
     app.add_handler(ChatMemberHandler(h.on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     # 私聊兜底：未识别的文本/未知命令 → 固定提示（必须排在全部业务处理器之后）
     app.add_handler(MessageHandler(

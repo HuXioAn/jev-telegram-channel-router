@@ -19,9 +19,9 @@ HELP = (
     "  1. 发送频道用户名或链接（仅公开频道，如 @Financial_Express）；\n"
     "     可以连续发送多个频道，加完后点「✅ 完成」\n"
     "  2. 用一句话描述你想筛选什么；也可以直接粘贴 JSON 模板（高级用法）\n"
-    "  3. 确认模板 → 选目的地（私聊 / 频道，可多选）→ 选检查频率\n\n"
+    "  3. 确认模板 → 选目的地（私聊 / 频道，可多选）→ 完成创建\n\n"
     "二、修改订阅（/list → 点选条目 → ✏️ 编辑）\n"
-    "  可随时增删源频道、增删目的地、改频率、重新描述筛选条件（模板）。\n\n"
+    "  可随时增删源频道、增删目的地、重新描述筛选条件（模板）。\n\n"
     "三、推送到频道\n"
     "  先把机器人添加为你频道的管理员，再在向导的「目的地」里选择该频道。\n\n"
     "四、先试跑再正式跑\n"
@@ -29,6 +29,7 @@ HELP = (
     "  发到订阅的目标，用来核对实际推送效果；不推进游标、不算正式推送。\n\n"
     "注意：\n"
     "· 只支持公开频道的网页预览；若频道关闭了预览则无法抓取；\n"
+    "· 频道的刷新节奏由系统统一调度（同一频道只抓取、判定一次），无需逐条设置频率；\n"
     "· 只推送订阅之后出现的新消息，停机过久可能漏掉超出预览窗口的消息；\n"
     "· 本机器人不使用 userbot，不读取私有频道。"
 )
@@ -86,14 +87,11 @@ DEST_DUPLICATE = "该目的地已在列表中。"
 NEED_ONE_DEST = "⚠️ 至少要保留一个目的地。"
 NEED_ONE_SOURCE = "⚠️ 至少要保留一个源频道。"
 DEST_CHANNEL_INVALID = "❌ 机器人不是「{title}」的管理员（可能已被移除），无法发送到该频道。"
-ASK_INTERVAL = "⏱ 选择检查频率（多久扫一次频道找新消息）："
-EDIT_INTERVAL = "⏱ 选择新的检查频率："
 SUB_CREATED = (
     "✅ 订阅 #{sub_id} 已创建！\n\n"
     "· 源频道：{sources}\n"
     "· 规则：{rule}\n"
-    "· 目的地：{dests}\n"
-    "· 频率：每 {interval} 分钟\n\n"
+    "· 目的地：{dests}\n\n"
     "从现在起只推送新消息。可以先 /test {sub_id} 试跑看看效果。"
 )
 NO_SUBS = "你还没有订阅。发送 /new 创建一个。"
@@ -149,7 +147,7 @@ def sub_line(sub: dict, template) -> str:
     sources = _join([f"@{s['source']}" for s in sub["sources"]])
     dests = _join([d["title"] or str(d["chat_id"]) for d in sub["dests"]])
     return (f"#{sub['id']}｜{sources} → {dests}\n"
-            f"{status}｜每 {sub['interval_minutes']} 分钟｜规则：{match_summary(template)}")
+            f"{status}｜规则：{match_summary(template)}")
 
 
 def sub_pick_line(index: int, sub: dict) -> str:
@@ -157,8 +155,7 @@ def sub_pick_line(index: int, sub: dict) -> str:
     state = "✅ 运行中" if sub["enabled"] else "⏸ 已暂停"
     sources = _join([f"@{s['source']}" for s in sub["sources"]], cap=2)
     dests = _join([d["title"] or str(d["chat_id"]) for d in sub["dests"]], cap=2)
-    return (f"{index}. #{sub['id']}｜{sources} → {dests}｜"
-            f"每 {sub['interval_minutes']} 分钟｜{state}")
+    return f"{index}. #{sub['id']}｜{sources} → {dests}｜{state}"
 
 
 def edit_menu_text(sub: dict, template) -> str:

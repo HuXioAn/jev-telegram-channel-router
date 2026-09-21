@@ -95,9 +95,27 @@ async def test_admin_quota_and_user_detail(tmp_path):
     text = await _run(context, ADMIN_ID, ["quota", str(USER_ID), "jev", "50"])
     assert "50" in text
     assert store.get_user(USER_ID)["quota_jev_monthly"] == 50
-    store.record_usage(USER_ID, "jev", 4)
+    store.record_usage(USER_ID, "consumed", 4)
     text = await _run(context, ADMIN_ID, ["user", str(USER_ID)])
-    assert "配额" in text and "本月 Jev 已用：4 / 50" in text and "Jev判定 4" in text
+    assert "配额" in text and "本月判定已消费：4 / 50" in text and "判定消费 4" in text
+
+
+async def test_admin_watches_and_watch_interval(tmp_path):
+    """频道调度管理：查看刷新列表、调整某频道间隔。"""
+    store, _, context = _make(tmp_path)
+    store.add_subscription(user_id=USER_ID, source="chan", template=make_template(),
+                           dest_kind="dm", dest_chat_id=USER_ID, dest_title="私聊",
+                           interval_minutes=20, last_seen_id=100)
+    store.sync_watches(20)
+    text = await _run(context, ADMIN_ID, ["watches"])
+    assert "@chan" in text and "每 20 分钟" in text and "游标 100" in text
+
+    text = await _run(context, ADMIN_ID, ["watch", "@chan", "7"])
+    assert "7" in text
+    assert store.get_watch("chan")["interval_minutes"] == 7
+
+    text = await _run(context, ADMIN_ID, ["watch", "nope", "5"])
+    assert "没有在观察" in text
 
 
 async def test_admin_bad_args_reports_help(tmp_path):

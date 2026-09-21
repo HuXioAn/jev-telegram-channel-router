@@ -1,6 +1,7 @@
-"""SQLite 存储层：users / chats / subscriptions / logs。"""
+"""SQLite 存储层：users / chats / subscriptions / watches / judgments / logs。"""
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
@@ -51,6 +52,19 @@ CREATE TABLE IF NOT EXISTS sub_dests (
     UNIQUE(sub_id, chat_id)
 );
 CREATE INDEX IF NOT EXISTS idx_sub_dests ON sub_dests(sub_id);
+CREATE TABLE IF NOT EXISTS watches (
+    channel TEXT PRIMARY KEY,
+    last_seen_id INTEGER,
+    interval_minutes INTEGER NOT NULL,
+    last_fetch_at TEXT
+);
+CREATE TABLE IF NOT EXISTS judgments (
+    channel TEXT NOT NULL,
+    post_id INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    PRIMARY KEY (channel, post_id)
+);
 CREATE TABLE IF NOT EXISTS logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sub_id INTEGER,
@@ -109,6 +123,8 @@ class Store:
             self._conn.executescript(_SCHEMA)
             self._migrate()
             self._conn.commit()
+        # 旧库/新库统一：把 enabled 订阅的源频道物化进 watches（幂等，仅补新增）
+        self.sync_watches(20)
 
     def _migrate(self) -> None:
         """旧库平滑升级：补齐后续新增的列。"""
@@ -376,24 +392,98 @@ class Store:
         self._run("DELETE FROM sub_dests WHERE sub_id=?", (sub_id,))
         self._run("DELETE FROM subscriptions WHERE id=?", (sub_id,))
 
-    def due_subscriptions(self, now: datetime) -> list[dict]:
-        """到期（enabled 且距上次运行超过 interval）的订阅（含源/目的地）。"""
-        due, rows = [], self._query("SELECT * FROM subscriptions WHERE enabled=1")
+    # ----------------------------------------------- watches（频道级调度）
+    def sync_watches(self, default_interval: int) -> None:
+        """物化：watches = enabled 订阅源频道并集（幂等）。
+
+        - 新频道：游标取该频道所有订阅游标的最小值（不丢消息）；间隔取订阅间隔最小值。
+        - 已有频道：只保留（间隔可被管理员改写，不覆盖）；无 enabled 观察者则退役删除。
+        """
+        rows = self._query(
+            "SELECT s.source AS channel, MIN(s.last_seen_id) AS cursor,"
+            " MIN(sub.interval_minutes) AS interval"
+            " FROM sub_sources s JOIN subscriptions sub ON sub.id = s.sub_id"
+            " WHERE sub.enabled=1 GROUP BY s.source")
+        live = {row["channel"] for row in rows}
+        existing = {row["channel"] for row in self._query("SELECT channel FROM watches")}
         for row in rows:
-            last = _parse_ts(row["last_run_at"])
+            if row["channel"] in existing:
+                continue
+            interval = max(1, int(row["interval"] or default_interval))
+            self._run(
+                "INSERT INTO watches(channel, last_seen_id, interval_minutes,"
+                " last_fetch_at) VALUES(?,?,?,NULL)",
+                (row["channel"], row["cursor"], interval))
+        for channel in existing - live:
+            self._run("DELETE FROM watches WHERE channel=?", (channel,))
+
+    def due_watches(self, now: datetime) -> list[dict]:
+        """到期（从未抓过，或距上次抓取超过间隔）的频道。"""
+        due = []
+        for row in self._query("SELECT * FROM watches"):
+            last = _parse_ts(row["last_fetch_at"])
             if last is None or now - last >= timedelta(minutes=row["interval_minutes"]):
-                due.append(self._with_children(row))
+                due.append(row)
         return due
 
-    def mark_run(self, sub_id: int, last_seen_id: int | None = None,
-                 when: str | None = None) -> None:
-        """记订阅级运行时间；last_seen_id 仅兼容旧签名（写首个源频道游标）。"""
-        self._run("UPDATE subscriptions SET last_run_at=? WHERE id=?",
-                  (when or _now(), sub_id))
-        if last_seen_id is not None:
-            rows = self.sub_sources(sub_id)
-            if rows:
-                self.mark_source_run(rows[0]["id"], last_seen_id)
+    def list_watches(self) -> list[dict]:
+        return self._query("SELECT * FROM watches ORDER BY channel")
+
+    def get_watch(self, channel: str) -> dict | None:
+        rows = self._query("SELECT * FROM watches WHERE channel=?", (channel,))
+        return rows[0] if rows else None
+
+    def set_watch_interval(self, channel: str, minutes: int) -> None:
+        self._run("UPDATE watches SET interval_minutes=? WHERE channel=?",
+                  (max(1, int(minutes)), channel))
+
+    def mark_watch_fetched(self, channel: str, last_seen_id: int | None = None,
+                           when: str | None = None) -> None:
+        """记录频道抓取时间；可选推进抓取游标（在路由完成之后调用）。"""
+        if last_seen_id is None:
+            self._run("UPDATE watches SET last_fetch_at=? WHERE channel=?",
+                      (when or _now(), channel))
+        else:
+            self._run(
+                "UPDATE watches SET last_seen_id=?, last_fetch_at=? WHERE channel=?",
+                (last_seen_id, when or _now(), channel))
+
+    def watchers_of(self, channel: str) -> list[dict]:
+        """观察某频道的 enabled 订阅（含源/目的地）。"""
+        rows = self._query(
+            "SELECT DISTINCT sub.* FROM subscriptions sub"
+            " JOIN sub_sources s ON s.sub_id = sub.id"
+            " WHERE sub.enabled=1 AND s.source=? ORDER BY sub.id", (channel,))
+        return [self._with_children(row) for row in rows]
+
+    # --------------------------------------------- judgments（频道级判定缓存）
+    def save_judgment(self, channel: str, post_id: int, payload: dict) -> None:
+        self._run(
+            "INSERT OR REPLACE INTO judgments(channel, post_id, payload, ts)"
+            " VALUES(?,?,?,?)",
+            (channel, int(post_id), json.dumps(payload, ensure_ascii=False), _now()))
+
+    def judgments_for(self, channel: str, post_ids: list[int]) -> dict[int, dict]:
+        """批量取判定结果：{post_id: {模板指纹: {本地问题: 答案}}}；缺失的不在返回中。"""
+        if not post_ids:
+            return {}
+        marks = ",".join("?" * len(post_ids))
+        rows = self._query(
+            f"SELECT post_id, payload FROM judgments WHERE channel=? AND post_id IN ({marks})",
+            (channel, *post_ids))
+        result = {}
+        for row in rows:
+            try:
+                result[row["post_id"]] = json.loads(row["payload"])
+            except ValueError:
+                continue
+        return result
+
+    def prune_judgments(self, days: int = 7) -> int:
+        """清理过期判定缓存；返回删除行数。"""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cursor = self._run("DELETE FROM judgments WHERE ts < ?", (cutoff,))
+        return int(cursor.rowcount or 0)
 
     # -------------------------------------------------------------- logs
     def log(self, sub_id: int | None, kind: str, detail: str = "") -> None:

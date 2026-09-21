@@ -106,9 +106,8 @@ async def run_wizard(app, user_id: int, channel: str, description: str) -> int |
         return None
     await _step(app, "点击「✅ 使用这个模板」", _callback(user_id, confirm, "tpl:confirm"))
     await _step(app, "点击「📬 加私聊」", _callback(user_id, confirm, "md:dm:new"))
-    await _step(app, "点击「✅ 完成」（目的地）",
+    await _step(app, "点击「✅ 完成」（目的地）→ 直接创建订阅",
                 _callback(user_id, confirm, "md:done:new"))
-    await _step(app, "点击「20 分钟」", _callback(user_id, confirm, "iv:20"))
     return _detect_sub_id()
 
 
@@ -182,7 +181,7 @@ async def main() -> None:
         print(f"   源频道 = {[s['source'] for s in row['sources']]}")
         print(f"   游标 = {[s['last_seen_id'] for s in row['sources']]}")
         print(f"   目的地 = {[(d['kind'], d['chat_id'], d['title']) for d in row['dests']]}")
-        print(f"   频率 = {row['interval_minutes']} 分钟｜enabled = {row['enabled']}")
+        print(f"   enabled = {row['enabled']}（刷新节奏由频道级调度负责）")
     finally:
         ExtBot.send_message = original_send
         ExtBot.edit_message_text = original_edit
