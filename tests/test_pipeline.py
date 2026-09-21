@@ -271,8 +271,8 @@ async def test_run_multi_source_multi_dest(tmp_path):
     assert fetcher.fetch_calls == [("chan_a", 100), ("chan_b", 200)]
     targets = [chat for chat, _ in sender.sent]
     assert targets == [42, -1005, 42, -1005]  # 两个源各发一轮，覆盖两个目的地
-    assert "@chan_a" in sender.sent[0][1][0] and "a1" in sender.sent[0][1][0]
-    assert "@chan_b" in sender.sent[2][1][0] and "b2" in sender.sent[2][1][0]
+    assert "a1" in sender.sent[0][1][0] and "ua1" in sender.sent[0][1][0]
+    assert "b2" in sender.sent[2][1][0] and "ub2" in sender.sent[2][1][0]
     assert "b1" not in sender.sent[2][1][0]  # 未命中不计入摘要
     sub = store.get_subscription(sub_id)
     assert [s["last_seen_id"] for s in sub["sources"]] == [101, 202]

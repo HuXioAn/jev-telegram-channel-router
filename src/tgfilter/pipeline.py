@@ -74,8 +74,8 @@ class Pipeline:
     async def _deliver(self, sub: dict, source: str, hits: list[tuple[Post, dict]],
                        template: Template, res: RunResult, *, test: bool) -> None:
         """把某源频道的命中摘要发往订阅的全部目的地（各目的地独立成败）。"""
-        chunks = formatting.compose_digest(source, sub["id"], hits, template,
-                                           self._chunk_limit, test=test)
+        chunks = formatting.compose_digest(hits, chunk_limit=self._chunk_limit,
+                                           test=test)
         sent_any = False
         for dest in sub["dests"]:
             label = dest["title"] or str(dest["chat_id"])

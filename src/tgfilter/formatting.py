@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from .models import Post, Template, format_answer_value
+from .models import Post, Template
 
 _CHUNK_MARK = "（{i}/{n}）"
 _TEST_MARK = "🧪 试跑样张（非正式推送）\n\n"
@@ -54,27 +54,21 @@ def template_summary(template: Template) -> str:
     return "\n".join(lines)
 
 
-def compose_digest(source: str, sub_id: int, hits: list[tuple[Post, dict]],
-                   template: Template, chunk_limit: int = 3800,
+def compose_digest(hits: list[tuple[Post, dict]], *, chunk_limit: int = 3800,
                    test: bool = False) -> list[str]:
-    """命中列表 → 一条或多条可直接发送的消息文本；test=True 时首条加试跑标头。"""
+    """命中列表 → 一条或多条可直接发送的消息文本。
+
+    每条消息只包含「正文 + 链接」，块与块之间以空行分隔；超长自动分块
+    （块尾加（i/n）标记）；test=True 时首块加试跑标头。
+    """
     if not hits:
         return []
-    span = ""
-    dates = sorted(p.date for p, _ in hits if p.date)
-    if dates:
-        span = f"｜{dates[0].strftime('%m-%d %H:%M')}–{dates[-1].strftime('%H:%M')}"
-    header = f"📮 @{source}｜订阅 #{sub_id}{span}｜命中 {len(hits)} 条"
-
     blocks: list[str] = []
-    for index, (post, answers) in enumerate(hits, 1):
-        timestamp = post.date.strftime("%m-%d %H:%M") if post.date else "?"
-        values = "｜".join(
-            f"{q.title or qid} {format_answer_value(q, answers.get(qid))}"
-            for qid, q in template.questions.items())
-        blocks.append(f"{index}. {timestamp}｜{values}\n{post.text}\n🔗 {post.url}")
+    for post, _ in hits:
+        blocks.append("\n".join(part for part in (post.text.strip(), post.url)
+                                if part))
 
-    chunks = _chunk_blocks(header, blocks, chunk_limit)
+    chunks = _chunk_blocks(blocks, chunk_limit)
     if len(chunks) > 1:  # 多段时加（i/n）标记
         total = len(chunks)
         chunks = [f"{chunk}\n\n{_CHUNK_MARK.format(i=i, n=total)}"
@@ -84,9 +78,9 @@ def compose_digest(source: str, sub_id: int, hits: list[tuple[Post, dict]],
     return chunks
 
 
-def _chunk_blocks(header: str, blocks: list[str], limit: int) -> list[str]:
+def _chunk_blocks(blocks: list[str], limit: int) -> list[str]:
     chunks: list[str] = []
-    current = header
+    current = ""
     for block in blocks:
         while True:
             candidate = f"{current}\n\n{block}" if current else block

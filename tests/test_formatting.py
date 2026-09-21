@@ -39,42 +39,43 @@ def test_template_summary_renders_structured_entries():
     assert '{"summary":"低"}' in text
 
 
-def test_compose_digest_single_chunk():
+def test_compose_digest_content_and_link_only():
     hits = [(_post(1, "第一条消息", 10), _answers()),
             (_post(2, "第二条消息", 12), _answers())]
-    chunks = compose_digest("chan", 5, hits, make_template())
+    chunks = compose_digest(hits)
     assert len(chunks) == 1
-    assert "📮 @chan｜订阅 #5" in chunks[0]
-    assert "命中 2 条" in chunks[0]
-    assert "第一条消息" in chunks[0] and "https://t.me/chan/2" in chunks[0]
-    assert "09-20 10:00–12:00" in chunks[0]
+    assert chunks[0] == ("第一条消息\nhttps://t.me/chan/1\n\n"
+                         "第二条消息\nhttps://t.me/chan/2")
+    # 头部与逐条前缀均已取消
+    assert "📮" not in chunks[0] and "订阅 #" not in chunks[0]
+    assert "命中" not in chunks[0] and "09-20" not in chunks[0]
+    assert not chunks[0].startswith("1.")
 
 
 def test_compose_digest_multi_chunk_marker_and_limit():
     hits = [(_post(i, "x" * 900), _answers()) for i in range(1, 4)]
-    chunks = compose_digest("chan", 5, hits, make_template(), chunk_limit=2000)
+    chunks = compose_digest(hits, chunk_limit=2000)
     assert len(chunks) == 2
     assert all(len(c) <= 2010 for c in chunks)
-    assert sum(c.count("🔗") for c in chunks) == 3
+    assert sum(c.count("https://t.me/chan/") for c in chunks) == 3
     assert "（1/2）" in chunks[0] and "（2/2）" in chunks[1]
 
 
 def test_compose_digest_hard_split_for_oversized_block():
     hits = [(_post(1, "y" * 5000), _answers())]
-    chunks = compose_digest("chan", 5, hits, make_template(), chunk_limit=1000)
+    chunks = compose_digest(hits, chunk_limit=1000)
     assert len(chunks) >= 5
     assert all(len(c) <= 1010 for c in chunks)
-    assert sum(c.count("🔗") for c in chunks) == 1
+    assert sum(c.count("https://t.me/chan/1") for c in chunks) == 1
 
 
 def test_compose_digest_empty():
-    assert compose_digest("chan", 5, [], make_template()) == []
+    assert compose_digest([]) == []
 
 
 def test_compose_digest_test_marker_on_first_chunk_only():
     hits = [(_post(i, "x" * 900), _answers()) for i in range(1, 4)]
-    chunks = compose_digest("chan", 5, hits, make_template(), chunk_limit=2000,
-                            test=True)
+    chunks = compose_digest(hits, chunk_limit=2000, test=True)
     assert len(chunks) == 2
     assert chunks[0].startswith("🧪 试跑样张（非正式推送）")
     assert "🧪" not in chunks[1]
