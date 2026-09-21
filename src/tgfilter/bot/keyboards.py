@@ -66,7 +66,26 @@ def sub_actions_kb(sub: dict) -> InlineKeyboardMarkup:
          InlineKeyboardButton("🧪 试跑", callback_data=f"sub:test:{sub['id']}")],
         [InlineKeyboardButton("✏️ 编辑", callback_data=f"sub:edit:{sub['id']}"),
          InlineKeyboardButton("🗑 删除", callback_data=f"sub:delete:{sub['id']}")],
+        [InlineKeyboardButton("⬅️ 返回列表", callback_data="sub:list")],
     ])
+
+
+def sub_pick_kb(subs: list[dict]) -> InlineKeyboardMarkup:
+    """条目选择菜单：一行一个订阅；打开后进入该条目的操作按钮。"""
+    rows = []
+    for index, sub in enumerate(subs, 1):
+        dest = next((d["title"] or str(d["chat_id"]) for d in sub["dests"]), "?")
+        extra = f" 等 {len(sub['dests'])} 个" if len(sub["dests"]) > 1 else ""
+        state = "" if sub["enabled"] else " ⏸"
+        label = f"{index}. #{sub['id']} · {dest}{extra}{state}"
+        rows.append([InlineKeyboardButton(label[:60],
+                                          callback_data=f"sub:open:{sub['id']}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def back_list_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("⬅️ 返回列表", callback_data="sub:list")]])
 
 
 def edit_menu_kb(sub_id: int) -> InlineKeyboardMarkup:

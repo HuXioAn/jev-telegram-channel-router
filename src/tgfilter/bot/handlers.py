@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 
-from telegram import ChatMember, Update
+from telegram import ChatMember, InlineKeyboardMarkup, Update
 from telegram.constants import ChatType
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes, ConversationHandler
@@ -14,8 +14,9 @@ from ..formatting import match_summary, template_summary
 from ..llm import LLMError
 from ..models import Template
 from ..store import template_of
-from .keyboards import (dest_manager_kb, edit_interval_kb, edit_menu_kb, interval_kb,
-                        main_menu_kb, src_manager_kb, sub_actions_kb, template_kb)
+from .keyboards import (back_list_kb, dest_manager_kb, edit_interval_kb,
+                        edit_menu_kb, interval_kb, main_menu_kb, src_manager_kb,
+                        sub_actions_kb, sub_pick_kb, template_kb)
 
 logger = logging.getLogger(__name__)
 
@@ -522,6 +523,14 @@ async def on_interval_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # ---------------------------------------------------------------- 订阅管理
+def _list_view(subs: list[dict]) -> tuple[str, InlineKeyboardMarkup]:
+    """条目选择视图：概览文本 + 每订阅一行按钮。"""
+    lines = [msg.LIST_HEAD.format(n=len(subs))]
+    lines += [msg.sub_pick_line(i, sub) for i, sub in enumerate(subs, 1)]
+    lines += ["", msg.LIST_HINT]
+    return "\n".join(lines), sub_pick_kb(subs)
+
+
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _require_private(update):
         await update.effective_message.reply_text(msg.PRIVATE_ONLY.format(cmd="/list"))
@@ -533,9 +542,8 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not subs:
         await update.effective_message.reply_text(msg.NO_SUBS)
         return
-    for sub in subs:
-        await update.effective_message.reply_text(
-            msg.sub_line(sub, template_of(sub)), reply_markup=sub_actions_kb(sub))
+    text, kb = _list_view(subs)
+    await update.effective_message.reply_text(text, reply_markup=kb)
 
 
 async def on_sub_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -543,7 +551,16 @@ async def on_sub_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await query.answer()
     svc = _svc(context)
     user_id = update.effective_user.id
-    _, action, raw_id = query.data.split(":")
+    parts = query.data.split(":")
+    if len(parts) == 2 and parts[1] == "list":  # 「返回列表」：回到条目选择视图
+        subs = svc.store.list_subscriptions(user_id=user_id)
+        if not subs:
+            await _edit(query, msg.NO_SUBS)
+            return
+        text, kb = _list_view(subs)
+        await _edit(query, text, reply_markup=kb)
+        return
+    _, action, raw_id = parts
     sub_id = int(raw_id)
     sub = svc.store.get_subscription(sub_id)
     if sub is None or sub["user_id"] != user_id:
@@ -556,15 +573,22 @@ async def on_sub_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     reply_markup=sub_actions_kb(sub))
     elif action == "delete":
         svc.store.delete_subscription(sub_id)
-        await _edit(query, f"🗑 订阅 #{sub_id} 已删除。")
+        subs = svc.store.list_subscriptions(user_id=user_id)
+        if subs:
+            text, kb = _list_view(subs)
+            await _edit(query, f"🗑 订阅 #{sub_id} 已删除。\n\n{text}",
+                        reply_markup=kb)
+        else:
+            await _edit(query, f"🗑 订阅 #{sub_id} 已删除。\n\n{msg.NO_SUBS}")
     elif action == "test":
         await _edit(query, msg.TESTING)
         result = await svc.pipeline.preview(sub, pool=100, limit=6)
-        await _edit(query, msg.test_result(result, sub, template_of(sub)))
+        await _edit(query, msg.test_result(result, sub, template_of(sub)),
+                    reply_markup=back_list_kb())
     elif action == "edit":
         await _edit(query, msg.edit_menu_text(sub, template_of(sub)),
                     reply_markup=edit_menu_kb(sub_id))
-    elif action == "show":
+    elif action in ("show", "open"):  # 打开条目：详情 + 操作按钮
         await _edit(query, msg.sub_line(sub, template_of(sub)),
                     reply_markup=sub_actions_kb(sub))
 

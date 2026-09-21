@@ -31,7 +31,7 @@ ERROR_NOTIFY_COOLDOWN_SECONDS = 6 * 3600
 # 注册到 Telegram 的命令菜单（客户端输入框的 “/” 列表）
 BOT_COMMANDS = [
     BotCommand("new", "新建订阅"),
-    BotCommand("list", "管理订阅（暂停/试跑/编辑/删除）"),
+    BotCommand("list", "我的订阅（选条目后暂停/试跑/编辑/删除）"),
     BotCommand("test", "试跑一次（样张发往订阅目标）"),
     BotCommand("help", "使用说明"),
     BotCommand("cancel", "取消当前操作"),

@@ -22,18 +22,22 @@ class FakeBot:
 
     def __init__(self) -> None:
         self.sent: list[tuple[int, str]] = []
+        self.sent_markups: list = []    # send_message 的 reply_markup
         self.edited: list[str] = []
+        self.edited_markups: list = []  # edit_message_text 的 reply_markup
         self.members: dict[int, str] = {}  # user_id → 状态（get_chat_member 桩数据）
         self.answers: list[tuple[str | None, bool]] = []  # 回调查询的应答（文案, 是否弹窗）
 
     async def send_message(self, chat_id, text, **kwargs):
         self.sent.append((chat_id, text))
+        self.sent_markups.append(kwargs.get("reply_markup"))
 
     async def get_chat_member(self, chat_id, user_id, **kwargs):
         return SimpleNamespace(status=self.members.get(user_id, "left"))
 
     async def edit_message_text(self, *args, **kwargs):
         self.edited.append(kwargs.get("text", args[0] if args else ""))
+        self.edited_markups.append(kwargs.get("reply_markup"))
 
     async def answer_callback_query(self, *args, **kwargs):
         self.answers.append((kwargs.get("text"), bool(kwargs.get("show_alert"))))
@@ -282,6 +286,82 @@ async def test_blocked_user_commands_refused(tmp_path):
     update.message.set_bot(bot)
     await h.cmd_test(update, context)
     assert "暂停" in bot.sent[-1][1]
+
+
+# --------------------------------------------------------- 订阅列表（选择菜单）
+def _kb_datas(markup) -> list[str]:
+    return [b.callback_data for row in markup.inline_keyboard for b in row]
+
+
+def _quick_sub(store, name: str, title: str = "私聊", kind: str = "dm",
+               chat_id: int = USER_ID) -> int:
+    return store.add_subscription(user_id=USER_ID, source=name, template=make_template(),
+                                  interval_minutes=20, dest_kind=kind,
+                                  dest_chat_id=chat_id, dest_title=title,
+                                  last_seen_id=1)
+
+
+async def test_list_is_single_pick_message(tmp_path):
+    """/list 改为单条消息 + 条目选择菜单（不再是每条订阅各带一排按钮）。"""
+    store, bot, context = _make(tmp_path)
+    id1 = _quick_sub(store, "chan_a")
+    id2 = _quick_sub(store, "chan_b", "测试频道", kind="channel", chat_id=CHAT_ID)
+    update = _text_update("/list")
+    update.message.set_bot(bot)
+    await h.cmd_list(update, context)
+    assert len(bot.sent) == 1  # 单条选择消息，而不是每订阅一条
+    text = bot.sent[0][1]
+    assert "我的订阅" in text and f"#{id1}" in text and f"#{id2}" in text
+    assert _kb_datas(bot.sent_markups[0]) == [f"sub:open:{id1}", f"sub:open:{id2}"]
+
+
+async def test_sub_pick_opens_entry_actions(tmp_path):
+    """点选条目 → 该条目的详情 + 操作按钮（含「⬅️ 返回列表」）。"""
+    store, bot, context = _make(tmp_path)
+    sub_id = _quick_sub(store, "chan_a")
+    update = _cb_update(f"sub:open:{sub_id}")
+    _attach_bot(update, bot)
+    await h.on_sub_action(update, context)
+    assert f"#{sub_id}" in bot.edited[-1] and "运行中" in bot.edited[-1]
+    datas = _kb_datas(bot.edited_markups[-1])
+    assert f"sub:pause:{sub_id}" in datas and f"sub:delete:{sub_id}" in datas
+    assert "sub:list" in datas
+
+
+async def test_sub_back_list_returns_to_picker(tmp_path):
+    """「⬅️ 返回列表」回到选择菜单。"""
+    store, bot, context = _make(tmp_path)
+    sub_id = _quick_sub(store, "chan_a")
+    update = _cb_update("sub:list")
+    _attach_bot(update, bot)
+    await h.on_sub_action(update, context)
+    assert "我的订阅" in bot.edited[-1]
+    assert _kb_datas(bot.edited_markups[-1]) == [f"sub:open:{sub_id}"]
+
+
+async def test_sub_pick_rejects_foreign_subscription(tmp_path):
+    """选中别人的订阅编号 → 按未找到处理。"""
+    store, bot, context = _make(tmp_path)
+    sub_id = store.add_subscription(user_id=USER_ID + 1, source="chan_x",
+                                    template=make_template(), interval_minutes=20,
+                                    dest_kind="dm", dest_chat_id=USER_ID + 1,
+                                    dest_title="私聊", last_seen_id=1)
+    update = _cb_update(f"sub:open:{sub_id}")
+    _attach_bot(update, bot)
+    await h.on_sub_action(update, context)
+    assert "未找到订阅" in bot.edited[-1]
+
+
+async def test_sub_delete_returns_to_fresh_picker(tmp_path):
+    """删除后自动回到刷新过的选择菜单（不残留操作按钮的空壳）。"""
+    store, bot, context = _make(tmp_path)
+    id1 = _quick_sub(store, "chan_a")
+    id2 = _quick_sub(store, "chan_b", "测试频道", kind="channel", chat_id=CHAT_ID)
+    update = _cb_update(f"sub:delete:{id1}")
+    _attach_bot(update, bot)
+    await h.on_sub_action(update, context)
+    assert "已删除" in bot.edited[-1] and f"#{id2}" in bot.edited[-1]
+    assert _kb_datas(bot.edited_markups[-1]) == [f"sub:open:{id2}"]
 
 
 async def test_llm_compile_records_usage(tmp_path):

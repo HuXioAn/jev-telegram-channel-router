@@ -8,7 +8,7 @@ WELCOME = (
     "👋 我是「频道过滤器」机器人。\n\n"
     "用法：订阅任意公开频道 → 用 Jev 判定每条新消息 → 命中后推送到你的私聊或频道。\n\n"
     "· /new — 新建订阅（可多源 → 多目的地）\n"
-    "· /list — 管理订阅（暂停/试跑/编辑/删除）\n"
+    "· /list — 我的订阅（点选条目后暂停/试跑/编辑/删除）\n"
     "· /test <编号> — 试跑一次（样张发往订阅目标）\n"
     "· /help — 使用说明"
 )
@@ -20,7 +20,7 @@ HELP = (
     "     可以连续发送多个频道，加完后点「✅ 完成」\n"
     "  2. 用一句话描述你想筛选什么；也可以直接粘贴 JSON 模板（高级用法）\n"
     "  3. 确认模板 → 选目的地（私聊 / 频道，可多选）→ 选检查频率\n\n"
-    "二、修改订阅（/list → ✏️ 编辑）\n"
+    "二、修改订阅（/list → 点选条目 → ✏️ 编辑）\n"
     "  可随时增删源频道、增删目的地、改频率、重新描述筛选条件（模板）。\n\n"
     "三、推送到频道\n"
     "  先把机器人添加为你频道的管理员，再在向导的「目的地」里选择该频道。\n\n"
@@ -97,6 +97,8 @@ SUB_CREATED = (
     "从现在起只推送新消息。可以先 /test {sub_id} 试跑看看效果。"
 )
 NO_SUBS = "你还没有订阅。发送 /new 创建一个。"
+LIST_HEAD = "📋 我的订阅（共 {n} 条）"
+LIST_HINT = "点按钮选择要操作的条目："
 TEST_NEED_ID = "你有多个订阅，请指定编号：/test <订阅编号>（用 /list 查看）"
 TEST_SUB_NOT_FOUND = "未找到订阅 #{sub_id}（用 /list 查看你的订阅）。"
 TESTING = "⏳ 正在试跑（拉取最近消息逐条判定，样张将发往目标）…"
@@ -148,6 +150,15 @@ def sub_line(sub: dict, template) -> str:
     dests = _join([d["title"] or str(d["chat_id"]) for d in sub["dests"]])
     return (f"#{sub['id']}｜{sources} → {dests}\n"
             f"{status}｜每 {sub['interval_minutes']} 分钟｜规则：{match_summary(template)}")
+
+
+def sub_pick_line(index: int, sub: dict) -> str:
+    """列表选择视图里的一行（无规则详情，避免过长）。"""
+    state = "✅ 运行中" if sub["enabled"] else "⏸ 已暂停"
+    sources = _join([f"@{s['source']}" for s in sub["sources"]], cap=2)
+    dests = _join([d["title"] or str(d["chat_id"]) for d in sub["dests"]], cap=2)
+    return (f"{index}. #{sub['id']}｜{sources} → {dests}｜"
+            f"每 {sub['interval_minutes']} 分钟｜{state}")
 
 
 def edit_menu_text(sub: dict, template) -> str:

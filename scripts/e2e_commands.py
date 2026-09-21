@@ -235,6 +235,8 @@ async def main() -> None:
 
         await _step(app, f"/list（应显示 #1 和 #{sid}）", CMD("/list"))
         list2 = _must(_find_last(lambda t: f"#{sid}｜" in t), "新订阅的列表消息")
+        await _step(app, f"点击选择菜单里的 #{sid}", _callback(user_id, list2, f"sub:open:{sid}"))
+        await _step(app, "点击「⬅️ 返回列表」", _callback(user_id, list2, "sub:list"))
         await _step(app, f"点击 #{sid}「暂停」", _callback(user_id, list2, f"sub:pause:{sid}"))
         _check("暂停生效（enabled=0）", store.get_subscription(sid)["enabled"] == 0)
         await _step(app, f"点击 #{sid}「恢复」", _callback(user_id, list2, f"sub:resume:{sid}"))
