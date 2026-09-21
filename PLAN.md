@@ -168,7 +168,7 @@ Telegram 用户 ──/new 向导──┐
   也不再有"多个条目时间不齐"的问题。
 - 缓存：`judgments(channel, post_id, payload, ts)`，payload={模板指纹: {本地问题: 答案}}；
   读取无需并集元数据。判定前查缓存 → 重跑/多订阅天然幂等。
-- 模板指纹：模板 JSON 规范化（sorted keys）哈希；编辑模板 → 新指纹 → 仅对新消息生效（同现状）。
+- 模板指纹：**问题集** payload 规范化（sorted keys）哈希；改命中规则/名称不影响缓存；编辑问题 → 新指纹 → 仅对新消息生效（同现状）。
 - 问题级去重：不同模板里 payload 完全相同的问题只问一次；提问 id = 问题 payload 哈希。
 - 并集上限：单次调用问题数超过 `judge_max_questions`（默认 24）时按模板分组分片多次调用
   （仍远少于 N×）。
@@ -189,7 +189,7 @@ Telegram 用户 ──/new 向导──┐
 - `bot/app.py`：tick 扫描到期 watches；并发键=频道。
 - `bot/`：向导去掉频率步骤；编辑菜单去掉频率项；列表/详情去掉间隔展示；
   `/admin` 新增 watches 管理。
-- `config.py`：`watch_interval_default=20`、`judge_max_questions=24`。
+- `config.py`：`default_interval_minutes=20`（频道刷新默认间隔）、`judge_max_questions=24`。
 
 ### 用户可见变化
 - `/new` 不再询问频率；条目不再显示"每 N 分钟"；编辑菜单去掉「⏱ 频率」。
