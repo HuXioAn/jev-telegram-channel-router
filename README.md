@@ -16,7 +16,7 @@ Subscribe to **any public Telegram channel**, filter every new post with **Jev (
 
 [**Jev**](https://typesafe.ai) turns plain-language questions into calibrated answers (`noul` probability, `score` grade, `choice` option). The whole bot is built on one loop: **you describe what deserves attention → it compiles into a reusable Jev template → every new post is judged → matches are routed to you.**
 
-**One post, one judgment.** Refreshing is scheduled per *source channel*, not per subscription: the questions of all active templates on a channel are merged (deduplicated and cached), so each post costs **one Jev call** no matter how many subscribers watch that channel. Measured on live channels against per-subscription judging: identical decisions, **−75% calls, −70% input tokens**.
+**One post, one judgment.** Refreshing is scheduled per *source channel*, not per subscription: the questions of all active templates on a channel are merged (deduplicated and cached), so each post costs **one Jev call** no matter how many subscribers watch that channel.
 
 - **Multi-user & isolated** — everyone brings their own sources, filters, and destinations.
 - **Natural-language setup** — describe it, dry-run it, let AI adjust it. Single-shot compilation; no agent chat.

@@ -74,8 +74,7 @@ one round:
 Consequences: cost scales with **posts × shards**, not posts × subscriptions;
 identical questions across users cost one call; caching makes cursor rollbacks
 and re-runs free. Decision parity with per-subscription judging is verified on
-real posts by `scripts/shadow_union.py` (40/40 identical; −75% calls; −70%
-input tokens, measured).
+real posts by `scripts/shadow_union.py`.
 
 ### Scheduling and cursors
 
