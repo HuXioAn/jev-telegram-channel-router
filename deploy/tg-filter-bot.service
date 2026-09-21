@@ -1,3 +1,5 @@
+# Copy this file to /etc/systemd/system/ and adjust the paths below to your
+# checkout location before enabling the service.
 [Unit]
 Description=tg-filter-bot (public channel -> Jev filter -> DM/channel routing)
 After=network-online.target

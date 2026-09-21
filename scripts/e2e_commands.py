@@ -54,7 +54,7 @@ def _next_id() -> int:
 
 
 def _user(user_id: int) -> User:
-    return User(id=user_id, first_name="Anton", is_bot=False)
+    return User(id=user_id, first_name="Alice", is_bot=False)
 
 
 def _message(user_id: int, text: str, entities=None) -> Message:

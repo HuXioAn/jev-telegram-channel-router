@@ -8,6 +8,9 @@ version = "0.1.0"
 description = "Subscribe to public Telegram channels, filter posts with Jev judgments, route matches to DMs or channels."
 readme = "README.md"
 requires-python = ">=3.11"
+authors = [{ name = "Andong Hu", email = "hu7006@outlook.com" }]
+license = "MIT"
+keywords = ["telegram", "telegram-bot", "typesafe", "jev", "message-router", "content-filtering"]
 dependencies = [
     "python-telegram-bot[job-queue]>=21.6,<23",
     "httpx>=0.27",
@@ -23,6 +26,11 @@ dev = [
 
 [project.scripts]
 tg-filter-bot = "tgfilter.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/HuXioAn/jev-telegram-channel-router"
+Repository = "https://github.com/HuXioAn/jev-telegram-channel-router"
+Issues = "https://github.com/HuXioAn/jev-telegram-channel-router/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tgfilter"]

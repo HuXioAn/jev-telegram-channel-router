@@ -14,7 +14,7 @@ from tgfilter.config import Settings
 from tgfilter.store import Store
 
 BOT_ID = 8884453670
-USER_ID = 8094970668
+USER_ID = 42424242
 CHAT_ID = -1009876543210
 
 
@@ -78,7 +78,7 @@ def _bot_user() -> User:
 def _member_update(chat_type: str, new_member) -> Update:
     return Update(update_id=1, my_chat_member=ChatMemberUpdated(
         chat=Chat(id=CHAT_ID, type=chat_type, title="测试频道"),
-        from_user=User(id=USER_ID, first_name="Anton", is_bot=False),
+        from_user=User(id=USER_ID, first_name="Alice", is_bot=False),
         date=datetime.now(timezone.utc),
         old_chat_member=ChatMemberLeft(user=_bot_user()),
         new_chat_member=new_member))
@@ -154,7 +154,7 @@ def _text_update(text: str = "你好") -> Update:
     return Update(update_id=2, message=Message(
         message_id=10, date=datetime.now(timezone.utc),
         chat=Chat(id=USER_ID, type="private"),
-        from_user=User(id=USER_ID, first_name="Anton", is_bot=False), text=text))
+        from_user=User(id=USER_ID, first_name="Alice", is_bot=False), text=text))
 
 
 async def test_plain_text_gets_fallback_hint(tmp_path):
@@ -170,7 +170,7 @@ def _group_update(text: str = "/list") -> Update:
     return Update(update_id=3, message=Message(
         message_id=11, date=datetime.now(timezone.utc),
         chat=Chat(id=-1001234567890, type="supergroup"),
-        from_user=User(id=USER_ID, first_name="Anton", is_bot=False), text=text))
+        from_user=User(id=USER_ID, first_name="Alice", is_bot=False), text=text))
 
 
 def test_resolve_dest_chat_only_for_owner(tmp_path):
@@ -209,7 +209,7 @@ def _cb_update(data: str, user_id: int = USER_ID) -> Update:
     msg = Message(message_id=20, date=datetime.now(timezone.utc),
                   chat=Chat(id=USER_ID, type="private"),
                   from_user=User(id=BOT_ID, first_name="bot", is_bot=True), text="x")
-    query = CallbackQuery(id="42", from_user=User(id=user_id, first_name="Anton",
+    query = CallbackQuery(id="42", from_user=User(id=user_id, first_name="Alice",
                                                   is_bot=False),
                           chat_instance="ci", data=data, message=msg)
     return Update(update_id=5, callback_query=query)
