@@ -1,0 +1,60 @@
+"""摘要合成与分块。"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from conftest import make_template
+from tgfilter.formatting import compose_digest, match_summary, template_summary
+from tgfilter.models import Post
+
+
+def _post(mid: int, text: str = "内容", hour: int = 10) -> Post:
+    return Post(id=mid, text=text, url=f"https://t.me/chan/{mid}",
+                date=datetime(2026, 9, 20, hour, 0, tzinfo=timezone.utc))
+
+
+def _answers(score: float = 0.9) -> dict:
+    return {"china": {"type": "noul", "noul": score}}
+
+
+def test_match_summary_uses_titles():
+    assert match_summary(make_template()) == "相关 >= 0.7"
+
+
+def test_template_summary_sections():
+    text = template_summary(make_template())
+    assert "1. 「相关」（noul）" in text
+    assert "问题：是否与中国相关？" in text
+    assert "🎯 命中条件：相关 >= 0.7" in text
+
+
+def test_compose_digest_single_chunk():
+    hits = [(_post(1, "第一条消息", 10), _answers()),
+            (_post(2, "第二条消息", 12), _answers())]
+    chunks = compose_digest("chan", 5, hits, make_template())
+    assert len(chunks) == 1
+    assert "📮 @chan｜订阅 #5" in chunks[0]
+    assert "命中 2 条" in chunks[0]
+    assert "第一条消息" in chunks[0] and "https://t.me/chan/2" in chunks[0]
+    assert "09-20 10:00–12:00" in chunks[0]
+
+
+def test_compose_digest_multi_chunk_marker_and_limit():
+    hits = [(_post(i, "x" * 900), _answers()) for i in range(1, 4)]
+    chunks = compose_digest("chan", 5, hits, make_template(), chunk_limit=2000)
+    assert len(chunks) == 2
+    assert all(len(c) <= 2010 for c in chunks)
+    assert sum(c.count("🔗") for c in chunks) == 3
+    assert "（1/2）" in chunks[0] and "（2/2）" in chunks[1]
+
+
+def test_compose_digest_hard_split_for_oversized_block():
+    hits = [(_post(1, "y" * 5000), _answers())]
+    chunks = compose_digest("chan", 5, hits, make_template(), chunk_limit=1000)
+    assert len(chunks) >= 5
+    assert all(len(c) <= 1010 for c in chunks)
+    assert sum(c.count("🔗") for c in chunks) == 1
+
+
+def test_compose_digest_empty():
+    assert compose_digest("chan", 5, [], make_template()) == []
