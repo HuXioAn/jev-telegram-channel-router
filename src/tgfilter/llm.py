@@ -100,15 +100,23 @@ class TemplateCompiler:
 
     async def _chat(self, messages: list[dict]) -> str:
         headers = {"Authorization": f"Bearer {self._api_key}"}
-        body: dict = {"model": self._model, "messages": messages, "temperature": 0}
-        for use_json_mode in (True, False):  # 端点不支持 json mode 时自动降级
-            payload = dict(body)
-            if use_json_mode:
-                payload["response_format"] = {"type": "json_object"}
+        base: dict = {"model": self._model, "messages": messages}
+        # 逐级降级以适配各家 OpenAI 兼容端点：
+        #   ① json_mode + temperature=0（输出最稳）
+        #   ② 去掉 response_format（端点不支持 JSON mode）
+        #   ③ 再去掉 temperature（部分推理模型只接受默认温度）
+        variants: list[dict] = [
+            {**base, "temperature": 0, "response_format": {"type": "json_object"}},
+            {**base, "temperature": 0},
+            {**base},
+        ]
+        last_error = "unknown"
+        for index, payload in enumerate(variants):
             response = await self._http.post(
                 f"{self._base}/chat/completions", json=payload, headers=headers,
                 timeout=self._timeout)
-            if response.status_code == 400 and use_json_mode:
+            if response.status_code == 400 and index < len(variants) - 1:
+                last_error = f"HTTP 400: {response.text[:200]}"
                 continue
             if response.status_code != 200:
                 raise LLMError(f"LLM HTTP {response.status_code}: {response.text[:200]}")
@@ -116,4 +124,4 @@ class TemplateCompiler:
                 return response.json()["choices"][0]["message"]["content"] or ""
             except (KeyError, IndexError, TypeError) as exc:
                 raise LLMError(f"LLM 响应结构异常：{exc}") from exc
-        raise LLMError("LLM 调用失败")
+        raise LLMError(f"LLM 调用失败（参数降级后仍被拒：{last_error}）")

@@ -149,3 +149,26 @@ async def test_compile_with_feedback_includes_previous_template():
     assert "调整意见" in user_message
     assert "门槛提高到 0.9" in user_message
     assert "china" in user_message  # 上一版模板被带上
+
+
+async def test_compile_degrades_when_temperature_rejected():
+    """部分推理模型拒绝 temperature：应再降一级，且不改 JSON 解析结果。"""
+    bodies = []
+
+    def handler(request):
+        payload = json.loads(request.content)
+        bodies.append(payload)
+        if "temperature" in payload:
+            return httpx.Response(400, json={"error": "temperature is not supported"})
+        return _ok_response(json.dumps(GOOD_TEMPLATE))
+
+    compiler, http = _compiler(handler)
+    try:
+        template = await compiler.compile("中国相关的消息")
+    finally:
+        await http.aclose()
+    assert template.name == "中国"
+    assert len(bodies) == 3
+    assert "response_format" in bodies[0] and "temperature" in bodies[0]
+    assert "response_format" not in bodies[1] and "temperature" in bodies[1]
+    assert "response_format" not in bodies[2] and "temperature" not in bodies[2]

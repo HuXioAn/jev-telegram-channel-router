@@ -78,12 +78,31 @@ python -m tgfilter          # 或：tg-filter-bot
 | `TYPESAFE_API_KEY` | Jev(TypeSafe) API key（必填） | — |
 | `TYPESAFE_BASE_URL` | Jev 端点 | `https://api.typesafe.ai/v1` |
 | `OPENAI_API_KEY` | OpenAI 兼容 LLM key（用于自然语言编译模板；留空则只能用 JSON 模板） | — |
-| `OPENAI_BASE_URL` | 兼容端点 | `https://api.openai.com/v1` |
+| `OPENAI_BASE_URL` | 兼容端点（含版本前缀，如 `/v1`） | `https://api.openai.com/v1` |
 | `OPENAI_MODEL` | 模型名 | `gpt-4o-mini` |
 | `DB_PATH` | SQLite 路径 | `data/tgfilter.db` |
 | `JEV_CONCURRENCY` | Jev 并发数 | `8` |
 | `FETCH_PAGE_DELAY` | 抓取翻页间隔（秒） | `0.6` |
 | `DIGEST_CHUNK_LIMIT` | 单条消息字符上限 | `3800` |
+
+### 接入任意 OpenAI 兼容 LLM（示例）
+
+LLM 只在「自然语言 → Jev 模板」这一步用到；换服务商只需改三行：
+
+| 服务 | `OPENAI_BASE_URL` | `OPENAI_MODEL` |
+| --- | --- | --- |
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
+| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` |
+| Kimi（月之暗面） | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
+| Qwen（阿里） | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
+| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-plus` |
+| OpenRouter | `https://openrouter.ai/api/v1` | 任意（如 `openai/gpt-4o-mini`） |
+| Anthropic | `https://api.anthropic.com/v1` | `claude-sonnet-4-20250514` |
+| Gemini | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.5-flash` |
+| Ollama 本地 | `http://localhost:11434/v1` | `qwen2.5:14b` |
+| vLLM / LM Studio | `http://localhost:8000/v1` | 自部署模型名 |
+
+端点若不支持 JSON mode、或拒绝 `temperature`（部分推理模型），客户端会自动逐级降参重试，无需手工适配。
 
 ## Bot 命令
 
