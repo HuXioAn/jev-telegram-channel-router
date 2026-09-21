@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timezone
 
 import httpx
-from telegram import Bot
+from telegram import Bot, BotCommand
 from telegram.error import TelegramError
 from telegram.ext import (Application, ApplicationBuilder, CallbackQueryHandler,
                           ChatMemberHandler, CommandHandler, ConversationHandler,
@@ -26,6 +26,16 @@ logger = logging.getLogger(__name__)
 
 TICK_SECONDS = 60
 ERROR_NOTIFY_COOLDOWN_SECONDS = 6 * 3600
+
+# 注册到 Telegram 的命令菜单（客户端输入框的 “/” 列表）
+BOT_COMMANDS = [
+    BotCommand("new", "新建订阅"),
+    BotCommand("list", "管理订阅"),
+    BotCommand("test", "试跑一次（只给自己看，不发消息）"),
+    BotCommand("help", "使用说明"),
+    BotCommand("cancel", "取消当前操作"),
+    BotCommand("start", "开始使用"),
+]
 
 _running: set[int] = set()
 _last_notified: dict[int, datetime] = {}
@@ -73,6 +83,10 @@ def build_application(settings: Settings) -> Application:
                             settings.digest_chunk_limit)
         app.bot_data["services"] = Services(settings, store, fetcher, jev, compiler, pipeline)
         app.bot_data["http"] = http
+        try:
+            await app.bot.set_my_commands(BOT_COMMANDS)
+        except TelegramError:
+            logger.warning("set_my_commands 失败（命令菜单未注册）", exc_info=True)
         app.job_queue.run_repeating(_tick, interval=TICK_SECONDS, first=10,
                                     name="due-subscriptions")
 

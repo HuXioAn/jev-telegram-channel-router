@@ -8,7 +8,7 @@ Type=simple
 WorkingDirectory=/root/work/tg-filter-bot
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/root/work/tg-filter-bot/.venv/bin/python -m tgfilter
-Restart=on-failure
+Restart=always
 RestartSec=5
 StandardOutput=append:/root/work/tg-filter-bot/data/bot.log
 StandardError=append:/root/work/tg-filter-bot/data/bot.log

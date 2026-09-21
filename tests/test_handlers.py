@@ -88,3 +88,12 @@ async def test_leave_removes_chat(tmp_path):
     store.upsert_chat(CHAT_ID, "channel", "测试频道", USER_ID)
     await h.on_my_chat_member(_member_update("channel", ChatMemberLeft(user=_bot_user())), context)
     assert store.get_chat(CHAT_ID) is None
+
+
+def test_bot_commands_menu_covers_all_handlers():
+    """客户端 “/” 菜单注册的命令必须覆盖全部处理器命令。"""
+    from tgfilter.bot.app import BOT_COMMANDS
+
+    names = {c.command for c in BOT_COMMANDS}
+    assert names == {"start", "new", "list", "test", "help", "cancel"}
+    assert all(3 <= len(c.description) <= 256 for c in BOT_COMMANDS)
