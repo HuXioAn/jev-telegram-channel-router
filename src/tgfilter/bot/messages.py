@@ -93,6 +93,10 @@ PRIVATE_ONLY = "🔒 请在与我的私聊中使用 {cmd}（订阅数据只对�
 DEST_CHANNEL_NOT_YOURS = (
     "❌ 无法选择「{title}」：该频道不由你添加，或机器人已不在其中。"
     "若是你的频道，请先把机器人添加为管理员。")
+DEST_USER_NOT_ADMIN = (
+    "❌ 你现在不是「{title}」的管理员，无法把消息发到该频道。"
+    "如果你已被移出管理员，请重新添加后再试。")
+SUBS_LIMIT = "⚠️ 每人最多 {n} 个订阅，你已达到上限。请先删除不用的订阅（/list）。"
 
 
 def sub_line(sub: dict, template) -> str:

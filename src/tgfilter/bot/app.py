@@ -8,9 +8,9 @@ from datetime import datetime, timezone
 import httpx
 from telegram import Bot, BotCommand, Update
 from telegram.error import TelegramError
-from telegram.ext import (Application, ApplicationBuilder, CallbackQueryHandler,
-                          ChatMemberHandler, CommandHandler, ConversationHandler,
-                          MessageHandler, TypeHandler, filters)
+from telegram.ext import (Application, ApplicationBuilder, BaseUpdateProcessor,
+                          CallbackQueryHandler, ChatMemberHandler, CommandHandler,
+                          ConversationHandler, MessageHandler, TypeHandler, filters)
 
 from ..channel_fetch import ChannelFetcher
 from ..config import Settings
@@ -36,6 +36,48 @@ BOT_COMMANDS = [
     BotCommand("cancel", "取消当前操作"),
     BotCommand("start", "开始使用"),
 ]
+
+CONCURRENT_UPDATES = 12  # 全局并行更新上限（同一聊天仍严格串行，见 PerChatUpdateProcessor）
+
+
+class PerChatUpdateProcessor(BaseUpdateProcessor):
+    """多用户并发：不同用户互不阻塞；同一聊天内更新严格串行，保证向导状态不乱序。
+
+    PTB 自带的 SimpleUpdateProcessor 只做全局信号量限流，同一聊天的多次
+    更新可能交叠执行（快速连点按钮/连发消息时向导会乱序），故在其上再加
+    一层「每聊天锁」。
+    """
+
+    def __init__(self, max_concurrent_updates: int = CONCURRENT_UPDATES):
+        super().__init__(max_concurrent_updates)
+        self._locks: dict[tuple[int, int], asyncio.Lock] = {}
+
+    @staticmethod
+    def _key(update: object) -> tuple[int, int] | None:
+        if not isinstance(update, Update):
+            return None
+        chat = update.effective_chat
+        if chat is None:
+            return None
+        user = update.effective_user
+        return (chat.id, user.id if user else 0)
+
+    async def initialize(self) -> None:
+        pass
+
+    async def shutdown(self) -> None:
+        pass
+
+    async def do_process_update(self, update: object, coroutine) -> None:
+        key = self._key(update)
+        if key is None:
+            await coroutine
+            return
+        if len(self._locks) > 4096:  # 丢弃空闲锁，防长期运行缓慢膨胀
+            self._locks = {k: v for k, v in self._locks.items() if v.locked()}
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            await coroutine
 
 _running: set[int] = set()
 _last_notified: dict[int, datetime] = {}
@@ -96,6 +138,7 @@ def build_application(settings: Settings) -> Application:
             await http.aclose()
 
     app = (ApplicationBuilder().token(settings.bot_token)
+           .concurrent_updates(PerChatUpdateProcessor(CONCURRENT_UPDATES))
            .post_init(post_init)
            .post_shutdown(post_shutdown)
            .build())

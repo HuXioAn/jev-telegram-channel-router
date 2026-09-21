@@ -4,9 +4,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from telegram import (Chat, ChatMemberAdministrator, ChatMemberLeft,
-                      ChatMemberMember, ChatMemberOwner, ChatMemberUpdated,
-                      Message, Update, User)
+from telegram import (CallbackQuery, Chat, ChatMemberAdministrator,
+                      ChatMemberLeft, ChatMemberMember, ChatMemberOwner,
+                      ChatMemberUpdated, Message, Update, User)
 
 from conftest import make_template
 from tgfilter.bot import handlers as h
@@ -18,11 +18,24 @@ CHAT_ID = -1009876543210
 
 
 class FakeBot:
+    id = BOT_ID
+
     def __init__(self) -> None:
         self.sent: list[tuple[int, str]] = []
+        self.edited: list[str] = []
+        self.members: dict[int, str] = {}  # user_id → 状态（get_chat_member 桩数据）
 
     async def send_message(self, chat_id, text, **kwargs):
         self.sent.append((chat_id, text))
+
+    async def get_chat_member(self, chat_id, user_id, **kwargs):
+        return SimpleNamespace(status=self.members.get(user_id, "left"))
+
+    async def edit_message_text(self, *args, **kwargs):
+        self.edited.append(kwargs.get("text", args[0] if args else ""))
+
+    async def answer_callback_query(self, *args, **kwargs):
+        pass
 
 
 def _bot_user() -> User:
@@ -52,7 +65,7 @@ def _make(tmp_path):
     bot = FakeBot()
     context = SimpleNamespace(
         application=SimpleNamespace(bot_data={"services": SimpleNamespace(store=store)}),
-        bot=bot)
+        bot=bot, user_data={})
     return store, bot, context
 
 
@@ -153,3 +166,60 @@ async def test_channel_demotion_removes_registration(tmp_path):
     await h.on_my_chat_member(
         _member_update("channel", ChatMemberMember(user=_bot_user())), context)
     assert store.get_chat(CHAT_ID) is None
+
+
+def _cb_update(data: str) -> Update:
+    msg = Message(message_id=20, date=datetime.now(timezone.utc),
+                  chat=Chat(id=USER_ID, type="private"),
+                  from_user=User(id=BOT_ID, first_name="bot", is_bot=True), text="x")
+    query = CallbackQuery(id="42", from_user=User(id=USER_ID, first_name="Anton",
+                                                  is_bot=False),
+                          chat_instance="ci", data=data, message=msg)
+    return Update(update_id=5, callback_query=query)
+
+
+def _attach_bot(update: Update, bot: FakeBot) -> None:
+    query = update.callback_query
+    query.set_bot(bot)
+    if query.message:
+        query.message.set_bot(bot)
+
+
+async def test_dest_choice_accepts_channel_admin(tmp_path):
+    """bot 与用户均为频道管理员 → 通过并进入频率选择。"""
+    store, bot, context = _make(tmp_path)
+    store.upsert_chat(CHAT_ID, "channel", "测试频道", USER_ID)
+    bot.members = {BOT_ID: "administrator", USER_ID: "administrator"}
+    update = _cb_update(f"dst:ch:{CHAT_ID}")
+    _attach_bot(update, bot)
+    state = await h.on_dest_choice(update, context)
+    assert state == h.WAIT_INTERVAL
+    assert context.user_data["dest_chat_id"] == CHAT_ID
+
+
+async def test_dest_choice_rejects_user_no_longer_admin(tmp_path):
+    """用户不再是频道管理员时拒绝（防陈旧权限）。"""
+    store, bot, context = _make(tmp_path)
+    store.upsert_chat(CHAT_ID, "channel", "测试频道", USER_ID)
+    bot.members = {BOT_ID: "administrator", USER_ID: "member"}
+    update = _cb_update(f"dst:ch:{CHAT_ID}")
+    _attach_bot(update, bot)
+    state = await h.on_dest_choice(update, context)
+    assert state == h.WAIT_DEST
+    assert any("不是「测试频道」的管理员" in text for text in bot.edited)
+
+
+async def test_subscription_cap_per_user(tmp_path):
+    """每人订阅数上限：达到上限后不再新建。"""
+    store, bot, context = _make(tmp_path)
+    template = make_template()
+    for index in range(h.MAX_SUBS_PER_USER):
+        store.add_subscription(user_id=USER_ID, source=f"c{index}", template=template,
+                               dest_kind="dm", dest_chat_id=USER_ID, dest_title="私聊",
+                               interval_minutes=20, last_seen_id=1)
+    update = _cb_update("iv:20")
+    _attach_bot(update, bot)
+    state = await h.on_interval_choice(update, context)
+    assert state == h.ConversationHandler.END
+    assert any("上限" in text for text in bot.edited)
+    assert len(store.list_subscriptions(user_id=USER_ID)) == h.MAX_SUBS_PER_USER

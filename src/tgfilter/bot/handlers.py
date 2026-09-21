@@ -25,6 +25,8 @@ K_DESC = "pending_desc"
 K_TEMPLATE = "pending_template"
 K_HEAD = "pending_head"
 
+MAX_SUBS_PER_USER = 20  # 每用户订阅数上限（防滥用配额）
+
 
 def _svc(context: ContextTypes.DEFAULT_TYPE):
     return context.application.bot_data["services"]
@@ -99,6 +101,8 @@ async def cmd_new(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if chat is not None and chat.type != ChatType.PRIVATE:
         await update.effective_message.reply_text("请在私聊中使用 /new 创建订阅。")
         return ConversationHandler.END
+    _svc(context).store.add_user(update.effective_user.id,
+                                 update.effective_user.username or "")
     context.user_data.clear()
     await update.effective_message.reply_text(msg.ASK_SOURCE)
     return WAIT_SOURCE
@@ -216,14 +220,23 @@ async def on_dest_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 reply_markup=dest_kb(svc.store.list_chats(added_by=user.id)))
             return WAIT_DEST
         title = chat.get("title") or str(chat_id)
-        member = None
         try:
-            member = await context.bot.get_chat_member(chat_id, context.bot.id)
+            bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
         except TelegramError:
-            member = None
-        if member is None or member.status not in (ChatMember.ADMINISTRATOR, ChatMember.OWNER):
+            bot_member = None
+        if bot_member is None or bot_member.status not in (ChatMember.ADMINISTRATOR, ChatMember.OWNER):
             await _edit(query, 
                 f"{msg.DEST_CHANNEL_INVALID.format(title=title)}\n\n{msg.ASK_DEST}",
+                reply_markup=dest_kb(svc.store.list_chats(added_by=user.id)))
+            return WAIT_DEST
+        try:
+            user_member = await context.bot.get_chat_member(chat_id, user.id)
+        except TelegramError:
+            user_member = None
+        if user_member is None or user_member.status not in (ChatMember.ADMINISTRATOR, ChatMember.OWNER):
+            # 选择者已不再是该频道管理员：防止离任后仍能推送（陈旧权限）
+            await _edit(query,
+                f"{msg.DEST_USER_NOT_ADMIN.format(title=title)}\n\n{msg.ASK_DEST}",
                 reply_markup=dest_kb(svc.store.list_chats(added_by=user.id)))
             return WAIT_DEST
         context.user_data["dest_kind"] = "channel"
@@ -238,6 +251,10 @@ async def on_interval_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer()
     minutes = int(query.data.split(":", 1)[1])
     svc = _svc(context)
+    if len(svc.store.list_subscriptions(user_id=update.effective_user.id)) >= MAX_SUBS_PER_USER:
+        await _edit(query, msg.SUBS_LIMIT.format(n=MAX_SUBS_PER_USER))
+        context.user_data.clear()
+        return ConversationHandler.END
     template = _pending_template(context)
     source = context.user_data[K_SOURCE]
     sub_id = svc.store.add_subscription(
