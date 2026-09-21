@@ -28,6 +28,17 @@ def test_template_summary_sections():
     assert "🎯 命中条件：相关 >= 0.7" in text
 
 
+def test_template_summary_renders_structured_entries():
+    tpl = make_template(questions={
+        "china": {"type": "noul", "title": "相关", "instructions": "是否与中国相关？",
+                  "criteria": {"true": {"what": "涉及中国"}, "false": "纯海外"}},
+        "imp": {"type": "score", "title": "重要", "instructions": "有多重要？",
+                "criteria": [{"summary": "低"}, "高"]}})
+    text = template_summary(tpl)
+    assert '{"what":"涉及中国"}' in text
+    assert '{"summary":"低"}' in text
+
+
 def test_compose_digest_single_chunk():
     hits = [(_post(1, "第一条消息", 10), _answers()),
             (_post(2, "第二条消息", 12), _answers())]

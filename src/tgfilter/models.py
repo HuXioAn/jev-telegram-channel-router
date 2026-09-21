@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Post(BaseModel):
@@ -16,6 +16,11 @@ class Post(BaseModel):
     url: str = ""
 
 
+# criteria 的元素：字符串或结构化对象/数组（对齐 Jev 的 EntryType，见官方 Advanced 文档）。
+# 结构化形式（如 {"what": ..., "examples": [...]}）能更精确地划定选项/等级边界。
+Entry = str | dict[str, Any] | list[Any] | None
+
+
 class _QuestionBase(BaseModel):
     title: str = ""  # 展示用短标签（不发给 Jev）
     instructions: str | dict | list
@@ -25,21 +30,21 @@ class NoulQuestion(_QuestionBase):
     """是/否问题，Jev 返回 0~1 概率。"""
 
     type: Literal["noul"] = "noul"
-    criteria: dict[str, str | None] | None = None
+    criteria: dict[str, Entry] | None = None
 
 
 class ChoiceQuestion(_QuestionBase):
     """从互斥选项中选择。"""
 
     type: Literal["choice"] = "choice"
-    criteria: dict[str, str | None]
+    criteria: dict[str, Entry]
 
 
 class ScoreQuestion(_QuestionBase):
     """沿有序等级评分，返回 0 起始的加权位置。"""
 
     type: Literal["score"] = "score"
-    criteria: list[str]
+    criteria: list[Entry] = Field(min_length=2, max_length=10)
 
 
 Question = Annotated[
@@ -66,6 +71,15 @@ class Template(BaseModel):
     name: str = ""
     questions: dict[str, Question]
     match: MatchSpec
+
+    @model_validator(mode="after")
+    def _conditions_reference_known_questions(self) -> "Template":
+        unknown = sorted({c.question for c in self.match.conditions
+                          if c.question not in self.questions})
+        if unknown:
+            raise ValueError(
+                f"match condition references unknown question id(s): {unknown}")
+        return self
 
     def jev_questions(self) -> dict[str, dict]:
         """转成 TypeSafe systemone 接口的 questions 字段（去掉展示用 title）。"""

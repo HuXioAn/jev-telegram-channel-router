@@ -60,6 +60,27 @@ def test_missing_or_none_answer_is_false():
     assert tpl.evaluate({"china": {"type": "noul", "noul": None}}) is False
 
 
+def test_structured_criteria_and_levels_accepted():
+    """criteria 支持 Jev 的结构化条目（what/examples、summary/signals）。"""
+    tpl = _tpl(
+        {"topic": {"type": "choice", "instructions": "?",
+                   "criteria": {"deals": {"what": "M&A", "examples": ["tender offer"]},
+                                "none": None}},
+         "severity": {"type": "score", "instructions": "?",
+                      "criteria": [{"summary": "low", "signals": ["s1"]}, "high"]},
+         "china": {"type": "noul", "instructions": "?",
+                   "criteria": {"true": {"what": "yes"}, "false": "no"}}},
+        [{"question": "china", "op": ">=", "value": 0.7}])
+    assert tpl.questions["topic"].criteria["deals"]["what"] == "M&A"
+    assert tpl.jev_questions()["severity"]["criteria"][0]["summary"] == "low"
+
+
+def test_condition_referencing_unknown_question_rejected():
+    with pytest.raises(ValidationError):
+        _tpl({"china": {"type": "noul", "instructions": "?"}},
+             [{"question": "missing", "op": ">=", "value": 0.5}])
+
+
 def test_jev_questions_strips_title_and_none():
     tpl = _tpl({"china": {"type": "noul", "title": "相关", "instructions": "?"}},
                [{"question": "china", "op": ">=", "value": 0.7}])

@@ -106,7 +106,7 @@ async def test_compile_retries_with_error_note_on_invalid_json():
         await http.aclose()
     assert template.name == "中国"
     assert len(bodies) == 2
-    assert "修正" in bodies[1]["messages"][-1]["content"]
+    assert "corrected" in bodies[1]["messages"][-1]["content"]
 
 
 async def test_compile_raises_after_two_failures():
@@ -146,9 +146,27 @@ async def test_compile_with_feedback_includes_previous_template():
     finally:
         await http.aclose()
     user_message = bodies[0]["messages"][1]["content"]
-    assert "调整意见" in user_message
+    assert "Requested adjustment" in user_message
     assert "门槛提高到 0.9" in user_message
     assert "china" in user_message  # 上一版模板被带上
+
+
+async def test_system_prompt_mandates_english_output_and_covers_jev_rules():
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        return _ok_response(json.dumps(GOOD_TEMPLATE))
+
+    compiler, http = _compiler(handler)
+    try:
+        await compiler.compile("描述")
+    finally:
+        await http.aclose()
+    system = bodies[0]["messages"][0]["content"]
+    assert "ENGLISH" in system  # 模板内容一律英文
+    for token in ("noul", "choice", "score", "not_in", "score:", "snap judgment"):
+        assert token in system, token
 
 
 async def test_compile_degrades_when_temperature_rejected():

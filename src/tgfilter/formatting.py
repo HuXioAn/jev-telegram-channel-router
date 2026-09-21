@@ -8,6 +8,15 @@ from .models import Post, Template, format_answer_value
 _CHUNK_MARK = "（{i}/{n}）"
 
 
+def _fmt_entry(value: object) -> str:
+    """criteria 条目渲染：字符串原样；结构化对象/数组压成紧凑 JSON；None → —。"""
+    if value is None:
+        return "—"
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
 def match_summary(template: Template) -> str:
     """把 match 规则渲染成一行人类可读文本。"""
     parts: list[str] = []
@@ -32,12 +41,13 @@ def template_summary(template: Template) -> str:
             instructions = json.dumps(instructions, ensure_ascii=False)
         lines.append(f"   问题：{instructions}")
         if question.type == "noul" and question.criteria:
-            lines.append(f"   是：{question.criteria.get('true') or '—'}")
-            lines.append(f"   否：{question.criteria.get('false') or '—'}")
+            lines.append(f"   是：{_fmt_entry(question.criteria.get('true'))}")
+            lines.append(f"   否：{_fmt_entry(question.criteria.get('false'))}")
         elif question.type == "choice":
             lines.append("   选项：" + " / ".join(question.criteria.keys()))
         elif question.type == "score":
-            lines.append("   等级：" + " < ".join(question.criteria))
+            lines.append("   等级：" + " < ".join(
+                _fmt_entry(item) for item in question.criteria))
     lines.append("")
     lines.append(f"🎯 命中条件：{match_summary(template)}")
     return "\n".join(lines)
