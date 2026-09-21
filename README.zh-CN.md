@@ -1,0 +1,251 @@
+# Jev Telegram Channel Router（中文版）
+
+[![CI](https://github.com/HuXioAn/jev-telegram-channel-router/actions/workflows/ci.yml/badge.svg)](https://github.com/HuXioAn/jev-telegram-channel-router/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+
+订阅**任意公开 Telegram 频道** → 用 **Jev（TypeSafe）判定**逐条语义过滤 → 命中消息**路由**到你的私聊或你管理的频道。
+
+> English: [README.md](README.md)
+
+## 为什么是 Jev？（Jev 就是这里的路由器）
+
+[**Jev**](https://typesafe.ai) 是 TypeSafe 的判定模型：它不是生成式对话 LLM，而是让你用自然语言向文本提问——*「这条是不是加密货币相关？有多重要？属于哪一类？」*——并返回**校准过的答案**（`noul` 0–1 概率、`score` 等级、`choice` 选项）。
+
+这个 bot 围绕一个思路构建：**把 Jev 当作消息路由器**。你用一句话描述「什么值得我看」；这句话被编译成可反复执行的 **Jev 模板**（问题集 + 命中条件）；然后**每一条新帖都交给 Jev 判定**——满足条件的被路由到你的目的地，其余丢弃。不需要关键词、不需要正则，也不需要你自己盯信息流。
+
+### 一条消息只判一次——无论有多少订阅者
+
+如果按「每个订阅各问一遍」，成本会随订阅数成倍放大。所以执行单位是**源频道**而不是订阅：
+
+1. 每轮刷新对每个频道**只抓取一次**新消息；
+2. 该频道上**全部活跃模板**（来自所有订阅、所有用户）的问题合并成一个**并集问题集**，按内容去重，超过 `JUDGE_MAX_QUESTIONS`（默认 24）时按模板分片；
+3. 对每条新消息，整个并集**只调用一次 Jev**；
+4. 答案按模板**逐一投影**、代入各自的命中条件求值，结果缓存（频道 + 消息 + 模板指纹，7 天 TTL）后路由。
+
+合并是隐式的：用户看不到也无需配置。在真实频道上实测（`scripts/shadow_union.py`），对比「每个订阅分开判定」：
+
+- 判定一致性：**40/40 完全相同**；
+- Jev 调用次数：**−75%**（同批 40 → 10 次）；
+- input token：**−70%**（18.5k → 5.6k）。
+
+其他要点：
+
+- **多用户、完全隔离**——任何 Telegram 用户都能建立自己的订阅（源、筛选、目的地各自独立）；频道目的地只有「把机器人添加进该频道的人」可以选。
+- **自然语言配置**——用一句话描述需求，LLM 编译成 Jev 模板；可试跑、可让 AI 调整。全程**无 agent loop**：单轮结构化 JSON 调用，不闲聊、不回复自然语言。
+- **n 源 → m 目的地**——一条订阅可挂多个源频道（各自游标独立），命中按源合成摘要后发往私聊和/或多个频道。
+- **token 粒度计量 + 管理后台**——记录 API 返回的真实 `input_tokens`/`output_tokens`，按用户、按类别入账；管理员可设置配额与封禁。
+- **白道抓取**——只用官方 Bot API 与公开的 `t.me/s/` 预览；不用 userbot，不碰私有频道，不抓成员名单。
+- **中英双语界面**——用户用 `/lang` 自选，实例默认由 `DEFAULT_LANG` / `/admin lang` 决定。
+
+## 工作原理
+
+```
+                    ┌─ 按源频道调度（每频道一轮）
+t.me/s/<频道>        ▼
+?after=<游标> ─ 增量抓取（限速 0.5–2s）─ 该频道全部订阅模板的问题并集
+                                                │
+                                                ▼
+                                  每条新消息一次 Jev 调用
+                                （结果缓存；429/529 退避重试）
+                                                │
+                               按各模板投影 → 代入命中条件求值
+                                                │
+                                        命中 → 合成摘要 → 路由
+                                  ┌─────────────┴─────────────┐
+                                  ▼                           ▼
+                          📬 用户私聊                 📢 用户频道（bot 是管理员）
+```
+
+- 调度单位是**源频道**：每 60 秒扫描到期频道（间隔取该频道所有订阅的最小值，管理员可用 `/admin watch` 调整）；同一频道一轮只抓取、只判定一次。
+- 两个游标解耦时间问题：频道级**抓取游标**（watch）只管追新；每个订阅的**消费游标**决定它从哪条开始收——新增订阅补收、老订阅已读部分不重复。
+- 判定结果按「频道 + 消息 + 模板指纹」缓存：游标回退重跑不会重复调用 Jev。
+- 命中多条时合并成一条摘要（每条仅「原文 + 链接」、空行分隔、无头部与逐条前缀），超长自动分块（≤3800 字符/条）。
+
+## 快速开始
+
+```bash
+# 1) 依赖（Python ≥ 3.11）
+git clone git@github.com:HuXioAn/jev-telegram-channel-router.git
+cd jev-telegram-channel-router
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e ".[dev]"
+
+# 2) 配置
+cp .env.example .env    # 填 BOT_TOKEN / TYPESAFE_API_KEY /（可选）OPENAI_*
+
+# 3) 自检（无需 bot token）
+pytest -q
+python scripts/smoke_live.py Financial_Express
+
+# 4) 运行
+python -m tgfilter          # 或：tg-filter-bot
+```
+
+### BotFather 配置
+
+1. `/newbot` 创建 bot，把 token 填进 `.env` 的 `BOT_TOKEN`。
+2. 若要推送到**频道**，把 bot **加为频道管理员**（频道 → 管理 → 管理员 → 添加）；无需其它开关。
+3. 群隐私设置与本 bot 无关——它从不读取群消息。
+
+### .env 变量
+
+| 变量 | 说明 | 默认 |
+| --- | --- | --- |
+| `BOT_TOKEN` | BotFather 颁发的 token（必填） | — |
+| `TYPESAFE_API_KEY` | Jev / TypeSafe API key（必填） | — |
+| `TYPESAFE_BASE_URL` | Jev 端点 | `https://api.typesafe.ai/v1` |
+| `OPENAI_API_KEY` | OpenAI 兼容 LLM key（自然语言编译模板用；留空则只能用 JSON 模板） | — |
+| `OPENAI_BASE_URL` | 兼容端点（含版本前缀，如 `/v1`） | `https://api.openai.com/v1` |
+| `OPENAI_MODEL` | 模型名 | `gpt-4o-mini` |
+| `DB_PATH` | SQLite 路径 | `data/tgfilter.db` |
+| `JEV_CONCURRENCY` | Jev 并发数 | `8` |
+| `FETCH_PAGE_DELAY` | 抓取翻页间隔（秒） | `0.6` |
+| `DIGEST_CHUNK_LIMIT` | 单条消息字符上限 | `3800` |
+| `DEFAULT_INTERVAL_MINUTES` | 频道刷新间隔默认值（分钟） | `20` |
+| `JUDGE_MAX_QUESTIONS` | 单次联合判定的问题上限（超出按模板分片） | `24` |
+| `DEFAULT_LANG` | 用户默认界面语言 `en` \| `zh`（用户 `/lang` 自选，管理员 `/admin lang` 改实例默认） | `en` |
+| `ADMIN_USER_IDS` | 管理员 Telegram 用户 id（逗号分隔）；留空则管理员命令禁用 | — |
+| `DEFAULT_USER_STATUS` | 新用户默认状态：`active` / `blocked`（邀请制） | `active` |
+
+### 接入任意 OpenAI 兼容 LLM（示例）
+
+LLM 只在「自然语言 → Jev 模板」这一步用到；换服务商只需改三行：
+
+| 服务 | `OPENAI_BASE_URL` | `OPENAI_MODEL` |
+| --- | --- | --- |
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
+| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` |
+| Kimi（月之暗面） | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
+| Qwen（阿里） | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
+| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-plus` |
+| OpenRouter | `https://openrouter.ai/api/v1` | 任意（如 `openai/gpt-4o-mini`） |
+| Anthropic | `https://api.anthropic.com/v1` | `claude-sonnet-4-20250514` |
+| Gemini | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.5-flash` |
+| Ollama 本地 | `http://localhost:11434/v1` | `qwen2.5:14b` |
+| vLLM / LM Studio | `http://localhost:8000/v1` | 自部署模型名 |
+
+端点若不支持 JSON mode、或拒绝 `temperature`（部分推理模型），客户端会自动逐级降参重试，无需手工适配。
+
+## Bot 命令
+
+| 命令 | 作用 |
+| --- | --- |
+| `/start` | 私聊入口（含菜单按钮） |
+| `/new` | 新建订阅向导：频道（可多个）→ 描述/模板 → 确认 → 目的地（可多选）→ 完成创建 |
+| `/list` | 我的订阅：先点选条目（按钮），再进行暂停/恢复/试跑/编辑/删除 |
+| `/test <编号>` | 试跑：拉最近 ~100 条判定，并把样张（最多 6 条、带 🧪 标头）发到订阅目标 |
+| `/lang` | 切换界面语言（English / 中文） |
+| `/help` | 使用说明 |
+| `/cancel` | 取消当前向导 |
+
+订阅结构为 **n 源 → m 目的地**：一条订阅可挂多个源频道（各自维护独立抓取游标），命中消息按源合成摘要后发往全部目的地（私聊/频道可混合、可多个）。
+
+向导要点：
+
+- 频道引用可连续发送多个（`@name`、`t.me/name` 或帖子链接），加完点「✅ 完成」；每个源频道都从「添加时的最新消息」开始推送。
+- 描述框可直接粘贴 **JSON 模板**（高级用法，绕过 LLM）。
+- 模板确认页可「✅ 使用」/「✏️ 重新描述」/「🔧 让 AI 调整」（带上一版模板与调整意见再编译）。
+- 目的地在「📬 加私聊」与「📢 加频道」间多选；频道需先把 bot 添加为管理员，加好后点「🔄 刷新频道列表」。源/目的地均不允许删空。
+- **编辑**：`/list` 点选条目 →「✏️ 编辑」→ 可分别修改 📡 源频道、📬 目的地、🧩 筛选模板；所有修改即时保存。
+- **刷新节奏由系统统一调度**（同一频道只抓取、判定一次），订阅侧无需也不会再设置频率；管理员可用 `/admin watch` 调整某频道的刷新间隔。
+- 试跑（/list 内按钮或 /test）会把样张**真正发到订阅目标**（带 🧪 标头、不推进游标、不算正式推送），便于在频道里核对推送效果。
+- **生成的模板内容一律为英文**（Jev 以英文为主训练语言，判定更准——官方 Models 页明确非英文精度较低）；被筛选的消息本身仍可以是中文/任何语言。
+
+## 模板格式（JSON）
+
+```jsonc
+{
+  "name": "中国重磅",
+  "questions": {
+    "china":  { "type": "noul",  "title": "相关", "instructions": "是否与中国市场/政策/公司直接相关？",
+                "criteria": {"true": "涉及中国", "false": "不涉及"} },
+    "cat":    { "type": "choice", "title": "类别", "instructions": "属于哪一类？",
+                "criteria": {"宏观": "…", "公司": "…", "行业": "…"} },
+    "importance": { "type": "score", "title": "重要", "instructions": "有多重要？",
+                "criteria": ["日常", "一般", "较高", "重大"] }
+  },
+  "match": { "logic": "all",
+             "conditions": [ {"question": "china", "op": ">=", "value": 0.7},
+                             {"question": "importance", "op": ">=", "value": 1.8} ] }
+}
+```
+
+- `noul` 返回 0~1 概率；`score` 返回 0 起始的等级位置；`choice` 返回选项名。
+- `op` 支持 `>=` `<=` `==` `in` `not_in`；`logic` 支持 `all` / `any`。
+- 问题 id 用英文小写；`title` 仅用于展示，不发给 Jev。
+
+## 用量统计与管理员后台
+
+每个用户逐条记录用量（`usage` 表，含时间、订阅号与 **API 返回的真实 token 数**）：
+
+| kind | 计什么 | token |
+| --- | --- | --- |
+| `jev` | Jev 判定调用次数（**频道级共享**记账，归属 `user_id=0` + 频道名；一次 = 该频道一轮内一条消息的并集判定） | ✅ 每次调用的真实 input/output |
+| `consumed` | 判定消费：用户实际消费的判定消息条数（同频道多订阅去重；**月度配额按此项计**） | — |
+| `llm` | 模板编译的 API 调用次数（含自动修复重试） | ✅ 真实 input/output |
+| `fetch` | 频道抓取次数（频道级共享记账） | — |
+| `deliver` | 推送消息条数 | — |
+
+合并判定后，判定成本是**频道公共成本**（记在 `user_id=0`、detail 为频道名，管理员视图显示「🛰 频道共享（系统）」）；用户的个人额度按 `consumed`（实际消费条数）计——公平且与金额无关。token 全部取自 API 响应本身，不是估算值。
+
+管理员由 `.env` 的 `ADMIN_USER_IDS` 指定（仅私聊生效；`/admin` 只出现在管理员自己的命令菜单里）：
+
+| 命令 | 作用 |
+| --- | --- |
+| `/admin` | 总览：用户/订阅数、今日/7/30/累计用量、30 天 Top 5 |
+| `/admin users [n]` | 用户列表：状态、订阅数、30 天用量 |
+| `/admin user <id>` | 详情：配额、本月判定已消费与 token 合计、订阅列表、各窗口用量、最近记录 |
+| `/admin usage [days]` | 按用户用量汇总（默认 30 天）——当月台账 |
+| `/admin watches` | 频道刷新调度：间隔/游标/观察者数/上次抓取 |
+| `/admin watch <频道> <分钟>` | 调整某频道的刷新间隔（如 `/admin watch Financial_Express 10`） |
+| `/admin lang <en\|zh>` | 实例默认界面语言 |
+| `/admin block <id>` / `unblock <id>` | 停用 / 恢复（停用会自动暂停其全部订阅并通知本人） |
+| `/admin quota <id> sub <n>` | 订阅数上限（0=默认 20） |
+| `/admin quota <id> jev <n>` | 每月判定配额（0=不限；按消费条数计，用尽自动暂停订阅并通知） |
+| `/admin note <id> <备注>` | 管理备注 |
+
+- 被停用的用户：/start /new /list /test 一律只回提示，不接受任何操作。
+- `DEFAULT_USER_STATUS=blocked` 可开启邀请制：新用户默认无权限，由管理员 `/admin unblock` 放行。
+- 配额按月（UTC）计算；用尽自动暂停订阅，管理员调整配额后用户可在 /list 恢复订阅（配额按消费条数计，token 仅作计量）。
+
+## 设计约束（有意为之）
+
+- **不回复自然语言**：bot 不做对话式回复；未识别的文本/未知命令只回一句固定提示（引导用 /help）。
+- **隐式合并判定**：同一消息对同一频道全部订阅只判定一次（问题并集 + 缓存 + 按模板路由），跨用户同源自动合并；用户无感知，也无需知道合并发生。
+- **多用户隔离**：订阅/频道目的地全部按用户校验归属；频道目的地只有「把机器人添加进频道的人」可选；/list /test 限私聊。
+- **多用户并发**：全局最多 12 条更新并行（用户间互不阻塞），同一聊天严格串行（向导不乱序）；发送侧自带 Telegram 限流退避重试。
+- **用量与配额**：所有执行路径（含试跑）逐条计量入账——次数 + API 真实 token；判定成本按频道级共享记账（`user_id=0`），个人配额按消费条数计；配额用尽自动暂停订阅，不静默超支。
+- **无 agent loop**：LLM 只做「描述 → JSON 模板」单轮翻译；编译失败自动带错误重试一次。
+- **白道抓取**：仅 `t.me/s/` 预览；频道若关闭网页预览则无法抓取（向导会即时提示）。
+- **滑动窗口**：公开预览通常只保留最近约 25 万条；停机过久可能漏掉窗口外的消息。
+- **投递即复制**：推送为「原文 + 链接」的复制转发（本 bot 对源频道无任何权限，无法原生转发）。
+
+## 部署（systemd）
+
+临时运行：`.venv/bin/python -m tgfilter`。安装为常驻服务（开机自启，崩溃自动重启）：
+
+```bash
+cp deploy/tg-filter-bot.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now tg-filter-bot
+systemctl status tg-filter-bot    # 状态
+tail -f data/bot.log              # 日志（追加写入）
+```
+
+## 测试
+
+```bash
+pytest -q                                   # 离线单测
+python scripts/smoke_live.py <频道>          # 冒烟：真网络（t.me + Jev），无需 bot token
+python scripts/shadow_union.py <频道> [n]    # 影子对照：真实消息上分开判 vs 联合判（一致性/用量）
+python scripts/e2e_wizard.py <user_id>      # 向导端到端：合成 Update 驱动真实 bot（真发到 DM）
+python scripts/e2e_commands.py <user_id>    # 全功能覆盖：命令/向导分支/按钮/频道事件/错误兜底
+```
+
+无 bot token 时，除「Telegram 收发」外的一切均可离线验证；拿到 token 后 `/start` 即可端到端跑通。
+
+## 文档与许可
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 组件、数据流、调度、存储、i18n。
+- [docs/DESIGN.md](docs/DESIGN.md) — 设计笔记与取舍（由最初的中文 PLAN.md 翻译而来）。
+- [LICENSE](LICENSE) — MIT。

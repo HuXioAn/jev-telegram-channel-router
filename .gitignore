@@ -1,5 +1,6 @@
 # secrets & local state
 .env
+.env.bak-*
 data/
 *.db
 *.db-wal
