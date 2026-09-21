@@ -63,21 +63,27 @@ Telegram 用户 ──/new 向导──┐
 
 ## 5. 数据模型（SQLite）
 
-- `users(id PK, username, created_at)`
+- `users(id PK, username, status, max_subs, quota_jev_monthly, note, created_at)`
 - `chats(chat_id PK, kind, title, added_by, added_at)` — 机器人被加入且可发言的频道/群（来自 my_chat_member 更新）
-- `subscriptions(id PK, user_id, source, template_json, dest_kind[dm|channel], dest_chat_id, dest_title, interval_minutes, enabled, last_seen_id, last_run_at, created_at)`
+- `subscriptions(id PK, user_id, template_json, interval_minutes, enabled, last_run_at, created_at)` — 订阅本体（**n 源 → m 目的地**）
+- `sub_sources(id PK, sub_id, source, last_seen_id, UNIQUE(sub_id, source))` — 源频道；每条独立游标，独立推进
+- `sub_dests(id PK, sub_id, kind[dm|channel], chat_id, title, UNIQUE(sub_id, chat_id))` — 目的地列表（私聊/频道可混）
 - `logs(id PK, sub_id, ts, kind, detail)` — 运行记录/投递结果（调试与审计）
+- `usage(id PK, ts, user_id, sub_id, kind, qty, input_tokens, output_tokens, detail)` — 用量（次数 + 真实 token）
 
-## 6. 用户流程（/new 向导）
+旧库（单源单目的地结构）在启动时自动迁移：`subscriptions` 重建 + 数据拆分进 `sub_sources` / `sub_dests`。
 
-1. `/new` → 发送频道（`@name` / `t.me/name` / `t.me/s/name`）→ 机器人验证预览可用，显示频道信息
-2. 发送一句自然语言筛选描述（例：“中国相关的重磅消息，排除娱乐八卦”）
-3. LLM 编译 → 显示模板摘要（问题 + 命中规则）→ [✅使用 / ✏️重新描述 / 🔧让 AI 调整]
-4. 选目的地：📬 我的私聊 ｜ 频道列表（要求先把机器人加为频道管理员）
-5. 选频率（10/20/30/60 分钟，默认 20）
-6. 保存订阅；`last_seen_id` 初始化为当前头部（只推新消息）；提示 `/test` 可先试跑
+## 6. 用户流程（/new 向导 + 订阅编辑）
 
-其他命令：`/list`（订阅管理：暂停/恢复/删除/试跑）、`/test <id>`（干跑：拉最近 ~100 条，展示命中样例，不发消息）、`/cancel`、`/help`。
+1. `/new` → 发送频道（`@name` / `t.me/name` / `t.me/s/name`）→ 验证预览可用；**可继续发送多个频道**，点「✅ 完成」进入下一步
+2. 发送一句自然语言筛选描述（例：“中国相关的重磅消息，排除娱乐八卦”）→ LLM 编译 → 模板摘要 → [✅使用 / ✏️重新描述 / 🔧让 AI 调整]
+3. 目的地**多选**：📬 私聊 / 频道列表（要求机器人是频道管理员、且频道为本人添加），可反复增删，至少保留一个
+4. 选频率（10/20/30/60 分钟，默认 20）
+5. 保存订阅；每条源频道的游标初始化为该频道当前头部（只推新消息）；提示 `/test` 可先试跑
+
+**编辑**：`/list` 任意订阅 →「✏️ 编辑」→ 📡 源频道（增/删）｜📬 目的地（增/删）｜⏱ 频率｜🧩 筛选模板（重新描述→编译→确认即保存）。所有修改即时落库；源/目的地均不允许删空。
+
+其他命令：`/list`（订阅管理：暂停/恢复/试跑/编辑/删除）、`/test <id>`（试跑：拉最近 ~100 条，样张发往订阅目标）、`/cancel`、`/help`。
 
 ## 7. Jev 模板 schema（LLM 输出 = 运行时输入）
 

@@ -1,4 +1,4 @@
-"""单订阅执行管线：续抓 → Jev 分类 → 规则匹配 → 合成 → 投递。"""
+"""单订阅执行管线：多源续抓 → Jev 分类 → 规则匹配 → 合成 → 多目的地投递。"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -19,7 +19,7 @@ class RunResult:
     matched: int = 0
     failed: int = 0
     sent: bool = False
-    sample: list[tuple[Post, dict]] = field(default_factory=list)
+    sample: list[tuple[str, Post, dict]] = field(default_factory=list)  # (源, 消息, 判定)
     error: str = ""
     input_tokens: int = 0    # 本轮 Jev 判定累计（API 返回的真实用量）
     output_tokens: int = 0
@@ -50,38 +50,53 @@ class Pipeline:
         self._store.log(sub["id"], "quota_exhausted", "本月 Jev 配额已用完，订阅已自动暂停")
 
     async def _classify_and_select(self, posts: list[Post], template: Template,
-                                   res: RunResult) -> list[tuple[Post, dict]]:
+                                   res: RunResult
+                                   ) -> tuple[list[tuple[Post, dict]], int, int, int]:
+        """判定一批消息；返回 (hits, 成功判定数, 本批 input tokens, 本批 output tokens)。"""
         results = await self._jev.classify_many([p.text for p in posts], template)
         hits: list[tuple[Post, dict]] = []
+        judged, tin, tout = 0, 0, 0
         for post, result in zip(posts, results):
             usage = result.get("usage") or {}
-            res.input_tokens += int(usage.get("input_tokens") or 0)
-            res.output_tokens += int(usage.get("output_tokens") or 0)
+            tin += int(usage.get("input_tokens") or 0)
+            tout += int(usage.get("output_tokens") or 0)
             if result.get("error"):
                 res.failed += 1
                 continue
+            judged += 1
             if template.evaluate(result["answers"]):
                 hits.append((post, result["answers"]))
-        res.matched = len(hits)
-        return hits
+        res.input_tokens += tin
+        res.output_tokens += tout
+        res.matched += len(hits)
+        return hits, judged, tin, tout
+
+    async def _deliver(self, sub: dict, source: str, hits: list[tuple[Post, dict]],
+                       template: Template, res: RunResult, *, test: bool) -> None:
+        """把某源频道的命中摘要发往订阅的全部目的地（各目的地独立成败）。"""
+        chunks = formatting.compose_digest(source, sub["id"], hits, template,
+                                           self._chunk_limit, test=test)
+        sent_any = False
+        for dest in sub["dests"]:
+            label = dest["title"] or str(dest["chat_id"])
+            try:
+                await self._sender.send(dest["chat_id"], chunks)
+                sent_any = True
+                self._store.record_usage(sub["user_id"], "deliver", len(chunks),
+                                         sub_id=sub["id"], detail=label)
+            except DeliveryError as exc:
+                res.error = res.error or f"投递失败（{label}）：{exc}"
+                self._store.log(sub["id"], "delivery_error", f"{label}: {exc}")
+        if sent_any:
+            res.sent = True
+            self._store.log(sub["id"], "delivered",
+                            f"{source}: {len(hits)} hits / {len(chunks)} msgs")
 
     async def run(self, sub: dict, *, dry: bool = False) -> RunResult:
-        """执行一次订阅：抓新消息 → 判定 → 命中则投递 → 推进游标。"""
+        """执行一次订阅：逐源抓新消息 → 判定 → 命中发往全部目的地 → 推进该源游标。"""
         res = RunResult(sub_id=sub["id"])
         template = template_of(sub)
         user_id = sub["user_id"]
-        after = sub["last_seen_id"]
-        if not after:
-            # 防御：没有游标时只把游标对齐到头部，不抓全量历史
-            try:
-                info = await self._fetcher.head(sub["source"])
-            except ChannelError as exc:
-                res.error = str(exc)
-                return res
-            if not dry:
-                self._store.mark_run(sub["id"], info.head_id)
-            return res
-
         remaining = self._quota_remaining(user_id)
         if remaining is not None and remaining <= 0:
             if not dry:
@@ -91,46 +106,52 @@ class Pipeline:
         if not dry:
             self._store.record_usage(user_id, "run", 1, sub_id=sub["id"], detail="run")
 
-        try:
-            posts, cursor = await self._fetcher.fetch_since(sub["source"], after)
-        except ChannelError as exc:
-            res.error = str(exc)
-            if not dry:
-                self._store.log(sub["id"], "fetch_error", str(exc))
-            return res
-        res.fetched = len(posts)
-        if not dry:
-            self._store.record_usage(user_id, "fetch", 1, sub_id=sub["id"])
-        if not posts:
-            if not dry:
-                self._store.mark_run(sub["id"], after)
-            return res
-
-        used_posts = posts if remaining is None else posts[:remaining]
-        hits = await self._classify_and_select(used_posts, template, res)
-        if not dry:
-            judged = max(0, len(used_posts) - res.failed)
-            if judged:
-                self._store.record_usage(
-                    user_id, "jev", judged, sub_id=sub["id"],
-                    input_tokens=res.input_tokens, output_tokens=res.output_tokens)
-            if len(used_posts) < len(posts):
-                self._store.log(sub["id"], "quota_truncated",
-                                f"配额将尽，仅判定 {len(used_posts)}/{len(posts)} 条")
-
-        if hits and not dry:
-            chunks = formatting.compose_digest(
-                sub["source"], sub["id"], hits, template, self._chunk_limit)
+        for src in sub["sources"]:
+            source = src["source"]
+            after = src["last_seen_id"]
+            if not after:
+                # 防御：没有游标时只把游标对齐到头部，不抓全量历史
+                try:
+                    info = await self._fetcher.head(source)
+                except ChannelError as exc:
+                    res.error = res.error or str(exc)
+                    continue
+                if not dry:
+                    self._store.mark_source_run(src["id"], info.head_id)
+                continue
             try:
-                await self._sender.send(sub["dest_chat_id"], chunks)
-                res.sent = True
-                self._store.record_usage(user_id, "deliver", len(chunks),
-                                         sub_id=sub["id"], detail=f"{len(hits)} hits")
-                self._store.log(sub["id"], "delivered",
-                                f"{len(hits)} hits / {len(chunks)} msgs")
-            except DeliveryError as exc:
-                res.error = f"投递失败：{exc}"
-                self._store.log(sub["id"], "delivery_error", str(exc))
+                posts, cursor = await self._fetcher.fetch_since(source, after)
+            except ChannelError as exc:
+                res.error = res.error or str(exc)
+                if not dry:
+                    self._store.log(sub["id"], "fetch_error", f"{source}: {exc}")
+                continue
+            res.fetched += len(posts)
+            if not dry:
+                self._store.record_usage(user_id, "fetch", 1,
+                                         sub_id=sub["id"], detail=source)
+            if not posts:
+                if not dry:
+                    self._store.mark_source_run(src["id"], after)
+                continue
+
+            used_posts = posts if remaining is None else posts[:remaining]
+            hits, judged, tin, tout = await self._classify_and_select(used_posts, template, res)
+            if not dry:
+                if judged:
+                    self._store.record_usage(user_id, "jev", judged, sub_id=sub["id"],
+                                             input_tokens=tin, output_tokens=tout,
+                                             detail=source)
+                if len(used_posts) < len(posts):
+                    self._store.log(sub["id"], "quota_truncated",
+                                    f"{source}: 配额将尽，仅判定 {len(used_posts)}/{len(posts)} 条")
+            if remaining is not None:
+                remaining = max(0, remaining - judged)
+            if hits and not dry:
+                await self._deliver(sub, source, hits, template, res, test=False)
+            if not dry:
+                self._store.mark_source_run(src["id"], cursor)
+
         if not dry:
             if res.failed:
                 self._store.log(sub["id"], "classify_failed", f"{res.failed} 条判定失败已跳过")
@@ -138,11 +159,11 @@ class Pipeline:
             if left is not None and left <= 0:
                 self._pause_quota(sub)
                 res.error = res.error or "本月 Jev 判定配额已用完，订阅已自动暂停。"
-            self._store.mark_run(sub["id"], cursor)
+            self._store.mark_run(sub["id"])
         return res
 
     async def preview(self, sub: dict, pool: int = 120, limit: int = 6) -> RunResult:
-        """试跑：拉最近 pool 条样本判定；把样张（最新 limit 条）发到订阅目标；不推进游标。仍计入用量与配额。"""
+        """试跑：逐源拉最近 pool 条样本判定；样张（每源最新 limit 条）发往全部目的地；不推进游标。仍计入用量与配额。"""
         res = RunResult(sub_id=sub["id"])
         template = template_of(sub)
         user_id = sub["user_id"]
@@ -151,37 +172,32 @@ class Pipeline:
             res.error = "本月 Jev 判定配额已用完（试跑同样计入配额）。"
             return res
         self._store.record_usage(user_id, "run", 1, sub_id=sub["id"], detail="preview")
-        try:
-            info = await self._fetcher.head(sub["source"])
-            posts, _ = await self._fetcher.fetch_since(sub["source"],
-                                                       max(1, info.head_id - pool))
-        except ChannelError as exc:
-            res.error = str(exc)
-            return res
-        self._store.record_usage(user_id, "fetch", 1, sub_id=sub["id"])
-        posts = [p for p in posts if p.text][-pool:]
-        if remaining is not None:
-            posts = posts[-remaining:]
-        res.fetched = len(posts)
-        if not posts:
-            return res
-        hits = await self._classify_and_select(posts, template, res)
-        judged = max(0, len(posts) - res.failed)
-        if judged:
-            self._store.record_usage(
-                user_id, "jev", judged, sub_id=sub["id"],
-                input_tokens=res.input_tokens, output_tokens=res.output_tokens)
-        sample_hits = hits[-limit:]  # 最新 limit 条，保持时间顺序
-        res.sample = list(reversed(sample_hits))  # DM 展示：最新在前
-        if sample_hits:
-            chunks = formatting.compose_digest(
-                sub["source"], sub["id"], sample_hits, template,
-                self._chunk_limit, test=True)
+        for src in sub["sources"]:
+            source = src["source"]
             try:
-                await self._sender.send(sub["dest_chat_id"], chunks)
-                res.sent = True
-                self._store.record_usage(user_id, "deliver", len(chunks),
-                                         sub_id=sub["id"], detail="preview")
-            except DeliveryError as exc:
-                res.error = f"样张发送到目标失败：{exc}"
+                info = await self._fetcher.head(source)
+                posts, _ = await self._fetcher.fetch_since(
+                    source, max(1, info.head_id - pool))
+            except ChannelError as exc:
+                res.error = res.error or str(exc)
+                continue
+            self._store.record_usage(user_id, "fetch", 1, sub_id=sub["id"], detail=source)
+            posts = [p for p in posts if p.text][-pool:]
+            if remaining is not None:
+                posts = posts[-remaining:]
+            res.fetched += len(posts)
+            if not posts:
+                continue
+            hits, judged, tin, tout = await self._classify_and_select(posts, template, res)
+            if judged:
+                self._store.record_usage(user_id, "jev", judged, sub_id=sub["id"],
+                                         input_tokens=tin, output_tokens=tout,
+                                         detail=source)
+            if remaining is not None:
+                remaining = max(0, remaining - judged)
+            sample_hits = hits[-limit:]  # 该源最新 limit 条，保持时间顺序
+            res.sample.extend((source, post, answers)
+                              for post, answers in reversed(sample_hits))
+            if sample_hits:
+                await self._deliver(sub, source, sample_hits, template, res, test=True)
         return res

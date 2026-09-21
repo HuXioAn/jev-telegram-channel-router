@@ -7,21 +7,24 @@ from ..models import format_answer_value
 WELCOME = (
     "👋 我是「频道过滤器」机器人。\n\n"
     "用法：订阅任意公开频道 → 用 Jev 判定每条新消息 → 命中后推送到你的私聊或频道。\n\n"
-    "· /new — 新建订阅\n"
-    "· /list — 管理订阅\n"
-    "· /test <编号> — 试跑一次（只给你看，不发消息）\n"
+    "· /new — 新建订阅（可多源 → 多目的地）\n"
+    "· /list — 管理订阅（暂停/试跑/编辑/删除）\n"
+    "· /test <编号> — 试跑一次（样张发往订阅目标）\n"
     "· /help — 使用说明"
 )
 
 HELP = (
     "📖 使用说明\n\n"
     "一、新建订阅（/new）\n"
-    "  1. 发送频道用户名或链接（仅公开频道，如 @Financial_Express）\n"
+    "  1. 发送频道用户名或链接（仅公开频道，如 @Financial_Express）；\n"
+    "     可以连续发送多个频道，加完后点「✅ 完成」\n"
     "  2. 用一句话描述你想筛选什么；也可以直接粘贴 JSON 模板（高级用法）\n"
-    "  3. 确认模板 → 选目的地（私聊 / 频道）→ 选检查频率\n\n"
-    "二、推送到频道\n"
+    "  3. 确认模板 → 选目的地（私聊 / 频道，可多选）→ 选检查频率\n\n"
+    "二、修改订阅（/list → ✏️ 编辑）\n"
+    "  可随时增删源频道、增删目的地、改频率、重新描述筛选条件（模板）。\n\n"
+    "三、推送到频道\n"
     "  先把机器人添加为你频道的管理员，再在向导的「目的地」里选择该频道。\n\n"
-    "三、先试跑再正式跑\n"
+    "四、先试跑再正式跑\n"
     "  /test <编号> 会拉取频道最近消息做一次判定演示，并把样张（最多 6 条、带 🧪 标头）\n"
     "  发到订阅的目标，用来核对实际推送效果；不推进游标、不算正式推送。\n\n"
     "注意：\n"
@@ -31,18 +34,25 @@ HELP = (
 )
 
 ASK_SOURCE = (
-    "请发送要订阅的频道：\n"
+    "请发送要订阅的频道（可添加多个）：\n"
     "· @频道名\n"
     "· 或链接 https://t.me/频道名\n\n"
-    "（仅支持公开频道；发送 /cancel 取消）"
+    "加完后点「✅ 完成」进入下一步。（发送 /cancel 取消）"
 )
 BAD_SOURCE = "❌ 频道引用无法解析：{err}\n请重试，或发送 /cancel 取消。"
 SOURCE_UNREACHABLE = "❌ 无法访问该频道：{err}\n请检查频道名后重试，或发送 /cancel 取消。"
-SOURCE_OK = (
-    "✅ 频道已确认：{title}（@{channel}）\n"
-    "最新消息 id：{head}｜示例：{sample}\n\n"
-    "下一步——"
-)
+SRC_MANAGER_HEAD = "📡 源频道（点 ❌ 移除；继续发送频道名/链接即可添加）"
+SRC_MANAGER_NEXT = "加完后点「✅ 完成」进入下一步。"
+SRC_MANAGER_BACK = "点「✅ 完成」返回。"
+SOURCE_DUPLICATE = "该频道已在源列表中。"
+
+
+def src_manager_text(sources: list[str], *, next_step: bool) -> str:
+    body = "\n".join(f"· @{s}" for s in sources) or "（无）"
+    hint = SRC_MANAGER_NEXT if next_step else SRC_MANAGER_BACK
+    return f"{SRC_MANAGER_HEAD}\n\n{body}\n\n{hint}"
+
+
 ASK_DESCRIBE = (
     "🗣 用一句话描述你想筛选出什么内容（自然语言即可）。\n"
     "例如：「中国相关的重磅消息，排除娱乐八卦」。\n\n"
@@ -59,20 +69,30 @@ TEMPLATE_CONFIRM = (
     "📋 请确认筛选模板：\n\n{summary}\n\n"
     "确认后继续选择推送目的地；也可以重新描述，或让 AI 调整。"
 )
-ASK_ADJUST = "🔧 请告诉我怎么调整（一句话即可），例如：「重要度门槛提高到 2.0」。"
-ASK_DEST = (
-    "📬 选择推送目的地：\n"
-    "· 「发到我的私聊」直接可用\n"
-    "· 发到频道：先把机器人添加为该频道的管理员（频道 → 管理 → 管理员 → 添加本机器人），"
-    "加好后点「🔄 刷新列表」。"
+TEMPLATE_CONFIRM_EDIT = (
+    "📋 请确认新的筛选模板：\n\n{summary}\n\n"
+    "确认后将覆盖当前订阅的筛选条件；也可以重新描述，或让 AI 调整。"
 )
+ASK_ADJUST = "🔧 请告诉我怎么调整（一句话即可），例如：「重要度门槛提高到 2.0」。"
+DEST_MANAGER_HEAD = (
+    "📬 推送目的地（可多选）：\n"
+    "· 「加私聊」直接可用；发到频道需先把机器人添加为该频道的管理员\n"
+    "· 点 ❌ 移除已选目的地"
+)
+DEST_MANAGER_NEXT = "选好后点「✅ 完成」进入下一步。"
+DEST_MANAGER_BACK = "改好后点「✅ 完成」返回。"
+DEST_MANAGER_EMPTY = "（还没选目的地——至少要选一个）"
+DEST_DUPLICATE = "该目的地已在列表中。"
+NEED_ONE_DEST = "⚠️ 至少要保留一个目的地。"
+NEED_ONE_SOURCE = "⚠️ 至少要保留一个源频道。"
 DEST_CHANNEL_INVALID = "❌ 机器人不是「{title}」的管理员（可能已被移除），无法发送到该频道。"
 ASK_INTERVAL = "⏱ 选择检查频率（多久扫一次频道找新消息）："
+EDIT_INTERVAL = "⏱ 选择新的检查频率："
 SUB_CREATED = (
     "✅ 订阅 #{sub_id} 已创建！\n\n"
-    "· 源频道：@{source}\n"
+    "· 源频道：{sources}\n"
     "· 规则：{rule}\n"
-    "· 目的地：{dest}\n"
+    "· 目的地：{dests}\n"
     "· 频率：每 {interval} 分钟\n\n"
     "从现在起只推送新消息。可以先 /test {sub_id} 试跑看看效果。"
 )
@@ -99,35 +119,68 @@ DEST_USER_NOT_ADMIN = (
     "如果你已被移出管理员，请重新添加后再试。")
 SUBS_LIMIT = "⚠️ 每人最多 {n} 个订阅，你已达到上限。请先删除不用的订阅（/list）。"
 BLOCKED = "⛔ 你的使用权限已被暂停。如需恢复请联系管理员。"
+EDIT_TITLE = "✏️ 编辑订阅 #{sub_id}"
+EDIT_HINT = "选择要修改的部分："
+EDIT_DONE = "✅ 已更新。"
+EDIT_TEMPLATE_ASK = (
+    "🧩 请重新描述筛选条件（确认后覆盖当前模板）：\n"
+    "例如：「中国相关的重磅消息，排除娱乐八卦」。\n\n"
+    "也可以直接粘贴 JSON 模板。发送 /cancel 取消。"
+)
+EDIT_SOURCE_ASK = (
+    "请发送要添加的频道：\n"
+    "· @频道名\n"
+    "· 或链接 https://t.me/频道名\n\n"
+    "新频道从当前最新消息开始推送。发送 /cancel 结束。"
+)
+
+
+def _join(items: list[str], cap: int = 3) -> str:
+    if not items:
+        return "（无）"
+    shown = "、".join(items[:cap])
+    return shown + (f" 等 {len(items)} 个" if len(items) > cap else "")
 
 
 def sub_line(sub: dict, template) -> str:
     status = "✅ 运行中" if sub["enabled"] else "⏸ 已暂停"
-    dest = sub["dest_title"] or str(sub["dest_chat_id"])
-    return (f"#{sub['id']}｜@{sub['source']} → {dest}\n"
+    sources = _join([f"@{s['source']}" for s in sub["sources"]])
+    dests = _join([d["title"] or str(d["chat_id"]) for d in sub["dests"]])
+    return (f"#{sub['id']}｜{sources} → {dests}\n"
             f"{status}｜每 {sub['interval_minutes']} 分钟｜规则：{match_summary(template)}")
+
+
+def edit_menu_text(sub: dict, template) -> str:
+    return f"{EDIT_TITLE.format(sub_id=sub['id'])}\n\n{sub_line(sub, template)}\n\n{EDIT_HINT}"
+
+
+def dest_manager_text(dests: list[str], *, next_step: bool) -> str:
+    body = "\n".join(f"· {d}" for d in dests) or DEST_MANAGER_EMPTY
+    hint = DEST_MANAGER_NEXT if next_step else DEST_MANAGER_BACK
+    return f"{DEST_MANAGER_HEAD}\n\n{body}\n\n{hint}"
 
 
 def test_result(res, sub: dict, template) -> str:
     lines = [
         f"🧪 试跑结果（订阅 #{res.sub_id}）",
+        f"· 源频道：{_join(['@' + s['source'] for s in sub['sources']])}",
         f"· 抽样：{res.fetched} 条｜命中：{res.matched} 条｜判定失败：{res.failed} 条",
     ]
     if res.sent:
-        dest = sub["dest_title"] or str(sub["dest_chat_id"])
-        lines.append(f"· 试跑样张（{len(res.sample)} 条）已发到目标：{dest}")
+        dests = _join([d["title"] or str(d["chat_id"]) for d in sub["dests"]])
+        lines.append(f"· 试跑样张（{len(res.sample)} 条）已发到目标：{dests}")
     if res.error:
         lines.append(f"⚠️ {res.error}")
     if res.sample:
         lines.append("")
         lines.append("命中示例（最新在前）：")
-        for post, answers in res.sample:
+        for source, post, answers in res.sample:
             timestamp = post.date.strftime("%m-%d %H:%M") if post.date else "?"
             values = "｜".join(
                 f"{question.title or qid} {format_answer_value(question, answers.get(qid))}"
                 for qid, question in template.questions.items())
             snippet = post.text.replace("\n", " ")[:80]
-            lines.append(f"· [{timestamp}]（{values}）{snippet}…")
+            lines.append(f"· [@{source}｜{timestamp}]（{values}）{snippet}…")
     elif not res.error:
         lines.append("")
         lines.append("（最近样本中没有命中——可以放宽阈值、调整描述，或换个频道试试）")

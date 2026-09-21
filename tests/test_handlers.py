@@ -24,6 +24,7 @@ class FakeBot:
         self.sent: list[tuple[int, str]] = []
         self.edited: list[str] = []
         self.members: dict[int, str] = {}  # user_id → 状态（get_chat_member 桩数据）
+        self.answers: list[tuple[str | None, bool]] = []  # 回调查询的应答（文案, 是否弹窗）
 
     async def send_message(self, chat_id, text, **kwargs):
         self.sent.append((chat_id, text))
@@ -35,7 +36,34 @@ class FakeBot:
         self.edited.append(kwargs.get("text", args[0] if args else ""))
 
     async def answer_callback_query(self, *args, **kwargs):
-        pass
+        self.answers.append((kwargs.get("text"), bool(kwargs.get("show_alert"))))
+
+
+class FakeFetcher:
+    """只提供 head 的抓取器桩（向导/编辑里添加频道用）。"""
+
+    def __init__(self, head_id: int = 500, error: str | None = None):
+        self.head_id = head_id
+        self.error = error
+        self.head_calls: list[str] = []
+
+    async def head(self, channel: str):
+        from tgfilter.channel_fetch import ChannelError, ChannelInfo
+
+        self.head_calls.append(channel)
+        if self.error:
+            raise ChannelError(self.error)
+        return ChannelInfo(channel=channel, title=channel, head_id=self.head_id, posts=[])
+
+
+class FakeCompiler:
+    """模板编译器桩：返回固定模板 + 固定用量。"""
+
+    def __init__(self, template=None):
+        self.template = template or make_template()
+
+    async def compile(self, text, feedback=None, previous=None):
+        return self.template, {"input_tokens": 900, "output_tokens": 60, "calls": 1}
 
 
 def _bot_user() -> User:
@@ -168,11 +196,11 @@ async def test_channel_demotion_removes_registration(tmp_path):
     assert store.get_chat(CHAT_ID) is None
 
 
-def _cb_update(data: str) -> Update:
+def _cb_update(data: str, user_id: int = USER_ID) -> Update:
     msg = Message(message_id=20, date=datetime.now(timezone.utc),
                   chat=Chat(id=USER_ID, type="private"),
                   from_user=User(id=BOT_ID, first_name="bot", is_bot=True), text="x")
-    query = CallbackQuery(id="42", from_user=User(id=USER_ID, first_name="Anton",
+    query = CallbackQuery(id="42", from_user=User(id=user_id, first_name="Anton",
                                                   is_bot=False),
                           chat_instance="ci", data=data, message=msg)
     return Update(update_id=5, callback_query=query)
@@ -185,28 +213,44 @@ def _attach_bot(update: Update, bot: FakeBot) -> None:
         query.message.set_bot(bot)
 
 
-async def test_dest_choice_accepts_channel_admin(tmp_path):
-    """bot 与用户均为频道管理员 → 通过并进入频率选择。"""
+async def test_dest_manager_accepts_channel_admin(tmp_path):
+    """bot 与用户均为频道管理员 → 频道加入目的地（新建流程）。"""
     store, bot, context = _make(tmp_path)
     store.upsert_chat(CHAT_ID, "channel", "测试频道", USER_ID)
     bot.members = {BOT_ID: "administrator", USER_ID: "administrator"}
-    update = _cb_update(f"dst:ch:{CHAT_ID}")
+    context.user_data["dests"] = []
+    update = _cb_update(f"md:ch:new:{CHAT_ID}")
     _attach_bot(update, bot)
-    state = await h.on_dest_choice(update, context)
-    assert state == h.WAIT_INTERVAL
-    assert context.user_data["dest_chat_id"] == CHAT_ID
+    state = await h.on_dest_manager(update, context)
+    assert state == h.WAIT_DEST
+    assert context.user_data["dests"][0]["chat_id"] == CHAT_ID
+    assert context.user_data["dests"][0]["title"] == "测试频道"
 
 
-async def test_dest_choice_rejects_user_no_longer_admin(tmp_path):
+async def test_dest_manager_rejects_user_no_longer_admin(tmp_path):
     """用户不再是频道管理员时拒绝（防陈旧权限）。"""
     store, bot, context = _make(tmp_path)
     store.upsert_chat(CHAT_ID, "channel", "测试频道", USER_ID)
     bot.members = {BOT_ID: "administrator", USER_ID: "member"}
-    update = _cb_update(f"dst:ch:{CHAT_ID}")
+    context.user_data["dests"] = []
+    update = _cb_update(f"md:ch:new:{CHAT_ID}")
     _attach_bot(update, bot)
-    state = await h.on_dest_choice(update, context)
+    state = await h.on_dest_manager(update, context)
     assert state == h.WAIT_DEST
+    assert context.user_data["dests"] == []
     assert any("不是「测试频道」的管理员" in text for text in bot.edited)
+
+
+async def test_dest_manager_rejects_last_removal(tmp_path):
+    """目的地不允许删空：最后一个目的地弹出警告且不删。"""
+    store, bot, context = _make(tmp_path)
+    context.user_data["dests"] = [{"kind": "dm", "chat_id": USER_ID, "title": "私聊"}]
+    update = _cb_update("md:rm:new:0")
+    _attach_bot(update, bot)
+    state = await h.on_dest_manager(update, context)
+    assert state == h.WAIT_DEST
+    assert context.user_data["dests"]  # 未被删除
+    assert bot.answers[-1] == ("⚠️ 至少要保留一个目的地。", True)
 
 
 async def test_subscription_cap_per_user(tmp_path):
@@ -244,10 +288,6 @@ async def test_llm_compile_records_usage(tmp_path):
     """模板编译计入 llm 用量：qty=API 调用次数，并记录真实 input/output token。"""
     store, bot, context = _make(tmp_path)
 
-    class FakeCompiler:
-        async def compile(self, text, feedback=None, previous=None):
-            return make_template(), {"input_tokens": 900, "output_tokens": 60, "calls": 1}
-
     context.application.bot_data["services"].compiler = FakeCompiler()
     update = _text_update("只要是与中国相关的消息")
     update.message.set_bot(bot)
@@ -255,3 +295,171 @@ async def test_llm_compile_records_usage(tmp_path):
     assert state == h.CONFIRM_TEMPLATE
     assert store.usage_rollup(user_id=USER_ID)["llm"] == {
         "count": 1, "in": 900, "out": 60}
+
+
+# ------------------------------------------------------------ 向导（n 源 → m 目的地）
+def _edit_env(tmp_path):
+    """已有 1 源 1 私聊目的地的订阅，供编辑流程测试。"""
+    store, bot, context = _make(tmp_path)
+    sub_id = store.add_subscription(
+        user_id=USER_ID, template=make_template(), interval_minutes=20,
+        sources=[{"source": "chan_a", "last_seen_id": 100}],
+        dests=[{"kind": "dm", "chat_id": USER_ID, "title": "私聊"}])
+    return store, bot, context, sub_id
+
+
+async def test_create_flow_multi_sources_and_dests(tmp_path):
+    """向导全流程：两个源频道 + 多目的地 → 一条 n:n 订阅。"""
+    store, bot, context = _make(tmp_path)
+    services = context.application.bot_data["services"]
+    services.fetcher = FakeFetcher()
+    services.compiler = FakeCompiler()
+
+    for name in ("chan_a", "chan_b"):
+        update = _text_update(f"@{name}")
+        update.message.set_bot(bot)
+        assert await h.on_source(update, context) == h.WAIT_SOURCE
+    assert [s["source"] for s in context.user_data["sources"]] == ["chan_a", "chan_b"]
+
+    update = _cb_update("ms:done:new")
+    _attach_bot(update, bot)
+    assert await h.on_src_manager(update, context) == h.WAIT_DESCRIBE
+
+    update = _text_update("中国相关的重磅消息")
+    update.message.set_bot(bot)
+    assert await h.on_describe(update, context) == h.CONFIRM_TEMPLATE
+
+    update = _cb_update("tpl:confirm")
+    _attach_bot(update, bot)
+    assert await h.on_template_choice(update, context) == h.WAIT_DEST
+
+    store.upsert_chat(CHAT_ID, "channel", "测试频道", USER_ID)
+    bot.members = {BOT_ID: "administrator", USER_ID: "administrator"}
+    update = _cb_update(f"md:ch:new:{CHAT_ID}")
+    _attach_bot(update, bot)
+    assert await h.on_dest_manager(update, context) == h.WAIT_DEST
+    update = _cb_update("md:dm:new")
+    _attach_bot(update, bot)
+    assert await h.on_dest_manager(update, context) == h.WAIT_DEST
+
+    update = _cb_update("md:done:new")
+    _attach_bot(update, bot)
+    assert await h.on_dest_manager(update, context) == h.WAIT_INTERVAL
+
+    update = _cb_update("iv:30")
+    _attach_bot(update, bot)
+    assert await h.on_interval_choice(update, context) == h.ConversationHandler.END
+
+    subs = store.list_subscriptions(user_id=USER_ID)
+    assert len(subs) == 1
+    sub = subs[0]
+    assert [s["source"] for s in sub["sources"]] == ["chan_a", "chan_b"]
+    assert [s["last_seen_id"] for s in sub["sources"]] == [500, 500]  # 从头部起
+    assert [d["chat_id"] for d in sub["dests"]] == [CHAT_ID, USER_ID]
+    assert sub["interval_minutes"] == 30
+
+
+# ------------------------------------------------------------------ 编辑流程
+async def test_edit_menu_and_interval(tmp_path):
+    """✏️ 编辑 → 修改频率即时生效。"""
+    store, bot, context, sub_id = _edit_env(tmp_path)
+    update = _cb_update(f"sub:edit:{sub_id}")
+    _attach_bot(update, bot)
+    await h.on_sub_action(update, context)
+    assert any("编辑订阅" in text for text in bot.edited)
+
+    update = _cb_update(f"eivs:{sub_id}:60")
+    _attach_bot(update, bot)
+    await h.on_edit_interval_set(update, context)
+    assert store.get_subscription(sub_id)["interval_minutes"] == 60
+    assert any("已更新" in text for text in bot.edited)
+
+
+async def test_edit_template_overwrites(tmp_path):
+    """编辑模板：etpl → 重新描述 → 确认覆盖保存，会话结束。"""
+    store, bot, context, sub_id = _edit_env(tmp_path)
+    new_template = make_template().model_copy(update={"name": "新模板"})
+    context.application.bot_data["services"].compiler = FakeCompiler(new_template)
+
+    update = _cb_update(f"etpl:{sub_id}")
+    _attach_bot(update, bot)
+    assert await h.on_edit_template(update, context) == h.WAIT_DESCRIBE
+    assert context.user_data[h.K_EDIT_SUB] == str(sub_id)
+
+    update = _text_update("换个筛选条件")
+    update.message.set_bot(bot)
+    assert await h.on_describe(update, context) == h.CONFIRM_TEMPLATE
+    assert any("覆盖" in text for _, text in bot.sent)  # 确认文案为编辑语义
+
+    update = _cb_update("tpl:confirm")
+    _attach_bot(update, bot)
+    assert await h.on_template_choice(update, context) == h.ConversationHandler.END
+    from tgfilter.store import template_of as _tpl
+
+    assert _tpl(store.get_subscription(sub_id)).name == "新模板"
+    assert h.K_EDIT_SUB not in context.user_data
+    assert any("已更新" in text for text in bot.edited)
+
+
+async def test_edit_sources_add_remove(tmp_path):
+    """编辑源频道：添加（游标=当前头部）、移除；不允许删空。"""
+    store, bot, context, sub_id = _edit_env(tmp_path)
+    context.application.bot_data["services"].fetcher = FakeFetcher(head_id=777)
+
+    update = _cb_update(f"ms:add:{sub_id}")
+    _attach_bot(update, bot)
+    assert await h.on_src_add(update, context) == h.WAIT_SOURCE
+
+    update = _text_update("@chan_b")
+    update.message.set_bot(bot)
+    assert await h.on_source(update, context) == h.WAIT_SOURCE
+    sub = store.get_subscription(sub_id)
+    assert [s["source"] for s in sub["sources"]] == ["chan_a", "chan_b"]
+    assert sub["sources"][1]["last_seen_id"] == 777
+
+    update = _cb_update(f"ms:rm:{sub_id}:{sub['sources'][1]['id']}")
+    _attach_bot(update, bot)
+    await h.on_src_manager(update, context)
+    assert [s["source"] for s in store.get_subscription(sub_id)["sources"]] == ["chan_a"]
+
+    sub = store.get_subscription(sub_id)
+    update = _cb_update(f"ms:rm:{sub_id}:{sub['sources'][0]['id']}")
+    _attach_bot(update, bot)
+    await h.on_src_manager(update, context)
+    assert len(store.get_subscription(sub_id)["sources"]) == 1  # 未删空
+    assert bot.answers[-1] == ("⚠️ 至少要保留一个源频道。", True)
+
+
+async def test_edit_dests_add_and_remove(tmp_path):
+    """编辑目的地：加频道（权限复核）、移除；不允许删空。"""
+    store, bot, context, sub_id = _edit_env(tmp_path)
+    store.upsert_chat(CHAT_ID, "channel", "测试频道", USER_ID)
+    bot.members = {BOT_ID: "administrator", USER_ID: "administrator"}
+
+    update = _cb_update(f"md:ch:{sub_id}:{CHAT_ID}")
+    _attach_bot(update, bot)
+    await h.on_dest_manager(update, context)
+    sub = store.get_subscription(sub_id)
+    assert [d["chat_id"] for d in sub["dests"]] == [USER_ID, CHAT_ID]
+
+    update = _cb_update(f"md:rm:{sub_id}:{sub['dests'][1]['id']}")
+    _attach_bot(update, bot)
+    await h.on_dest_manager(update, context)
+    assert [d["chat_id"] for d in store.get_subscription(sub_id)["dests"]] == [USER_ID]
+
+    sub = store.get_subscription(sub_id)
+    update = _cb_update(f"md:rm:{sub_id}:{sub['dests'][0]['id']}")
+    _attach_bot(update, bot)
+    await h.on_dest_manager(update, context)
+    assert len(store.get_subscription(sub_id)["dests"]) == 1  # 未删空
+    assert bot.answers[-1] == ("⚠️ 至少要保留一个目的地。", True)
+
+
+async def test_edit_refuses_other_users_sub(tmp_path):
+    """多用户隔离：改不了别人的订阅（猜编号无效）。"""
+    store, bot, context, sub_id = _edit_env(tmp_path)
+    update = _cb_update(f"etpl:{sub_id}", user_id=USER_ID + 1)
+    _attach_bot(update, bot)
+    assert await h.on_edit_template(update, context) == h.ConversationHandler.END
+    assert any("未找到" in text for text in bot.edited)
+    assert h.K_EDIT_SUB not in context.user_data

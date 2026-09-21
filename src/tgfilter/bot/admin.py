@@ -185,8 +185,10 @@ def _user_detail(svc, uid: int) -> str:
     lines.append(f"📡 订阅（{len(subs)}）：")
     for sub in subs[:10]:
         mark = "✅" if sub["enabled"] else "⏸"
-        lines.append(f"· #{sub['id']} {mark} @{sub['source']} → "
-                     f"{sub['dest_title'] or sub['dest_chat_id']}"
+        sources = "、".join("@" + item["source"] for item in sub["sources"][:3]) or "（无）"
+        dests = "、".join(item["title"] or str(item["chat_id"])
+                          for item in sub["dests"][:3]) or "（无）"
+        lines.append(f"· #{sub['id']} {mark} {sources} → {dests}"
                      f"｜每 {sub['interval_minutes']} 分钟")
     if not subs:
         lines.append("（无）")

@@ -181,6 +181,9 @@ async def main() -> None:
         # ---------- C1. 向导：Power Mode + 频道路径 ----------
         await _step(app, "/new", CMD("/new"))
         await _step(app, "发送频道 URL 变体", U("https://t.me/Financial_Express"))
+        manager = _must(_find_last(lambda t: t.startswith("📡")), "源频道管理器")
+        await _step(app, "点击「✅ 完成」（源频道）",
+                    _callback(user_id, manager, "ms:done:new"))
         await _step(app, "发送非法 JSON（应报错并留在原地）", U("{坏掉的 json"))
         backup = ROOT / "data/sub1_template_backup.json"
         if backup.exists():
@@ -199,25 +202,27 @@ async def main() -> None:
         await _step(app, "点击「使用这个模板」", _callback(user_id, confirm, "tpl:confirm"))
         mark = _mark()
         await _step(app, "点击「刷新列表」（内容未变，应静默）",
-                    _callback(user_id, confirm, "dst:refresh"))
+                    _callback(user_id, confirm, "md:refresh:new"))
         _check("刷新列表已静默处理（无报错）",
                not any("出错了" in t for t in _new_texts(mark)))
         mark = _mark()
         await _step(app, "选择「测试频道」——真实校验（bot 实际不在该频道）",
-                    _callback(user_id, confirm, f"dst:ch:{FAKE_CHAT_ID}"))
+                    _callback(user_id, confirm, f"md:ch:new:{FAKE_CHAT_ID}"))
         _check("真实校验失败被正确拦下",
                any("管理员" in t and "无法发送" in t for t in _new_texts(mark)))
         _state["fake_member"] = ChatMemberMember(user=bot_user)
         mark = _mark()
         await _step(app, "选择「测试频道」——模拟普通成员（应拦下且不崩溃）",
-                    _callback(user_id, confirm, f"dst:ch:{FAKE_CHAT_ID}"))
+                    _callback(user_id, confirm, f"md:ch:new:{FAKE_CHAT_ID}"))
         _check("非管理员被拦下（无报错、未进入下一步）",
                not any("出错了" in t for t in _new_texts(mark))
                and not any("检查频率" in t for t in _new_texts(mark)))
         _state["fake_member"] = ChatMemberOwner(user=bot_user, is_anonymous=False)
         await _step(app, "选择「测试频道」——模拟管理员（应通过）",
-                    _callback(user_id, confirm, f"dst:ch:{FAKE_CHAT_ID}"))
+                    _callback(user_id, confirm, f"md:ch:new:{FAKE_CHAT_ID}"))
         _state["fake_member"] = None
+        await _step(app, "点击「✅ 完成」（目的地）",
+                    _callback(user_id, confirm, "md:done:new"))
         await _step(app, "点击「60 分钟」", _callback(user_id, confirm, "iv:60"))
         sid = next((int(m.text.split("#", 2)[1].split(" ", 1)[0])
                     for _, m in reversed(_state["outbox"])
@@ -225,7 +230,8 @@ async def main() -> None:
         sub2 = store.get_subscription(sid) if sid else None
         _check("订阅已创建（dest=测试频道, 60 分钟）",
                sub2 is not None and sub2["interval_minutes"] == 60
-               and sub2["dest_kind"] == "channel" and sub2["dest_chat_id"] == FAKE_CHAT_ID)
+               and [(d["kind"], d["chat_id"]) for d in sub2["dests"]]
+               == [("channel", FAKE_CHAT_ID)])
 
         await _step(app, f"/list（应显示 #1 和 #{sid}）", CMD("/list"))
         list2 = _must(_find_last(lambda t: f"#{sid}｜" in t), "新订阅的列表消息")
@@ -241,6 +247,9 @@ async def main() -> None:
         # ---------- C2. 向导：自然语言 + 重新描述 + 微调 + 私聊分支 ----------
         await _step(app, "/new（自然语言分支）", CMD("/new"))
         await _step(app, "发送频道名", U("Financial_Express"))
+        manager2 = _must(_find_last(lambda t: t.startswith("📡")), "源频道管理器 2")
+        await _step(app, "点击「✅ 完成」（源频道）",
+                    _callback(user_id, manager2, "ms:done:new"))
         await _step(app, "发送自然语言描述（LLM 编译）", U("只看中国相关的重大财经新闻"))
         confirm2 = _must(_find_last(lambda t: t.startswith("📋")), "模板确认消息 2")
         await _step(app, "点击「重新描述」", _callback(user_id, confirm2, "tpl:redo"))
@@ -250,7 +259,8 @@ async def main() -> None:
         await _step(app, "发送微调意见（LLM 再编译）", U("把重要度阈值提高到 2.5"))
         confirm4 = _must(_find_last(lambda t: t.startswith("📋")), "模板确认消息 4")
         await _step(app, "点击「使用这个模板」", _callback(user_id, confirm4, "tpl:confirm"))
-        await _step(app, "点击「发到我的私聊」（DM 分支）", _callback(user_id, confirm4, "dst:dm"))
+        await _step(app, "点击「📬 加私聊」（DM 分支）",
+                    _callback(user_id, confirm4, "md:dm:new"))
         await _step(app, "/cancel（频率选择前取消）", CMD("/cancel"))
         _check("取消后未产生新订阅",
                len(store.list_subscriptions(user_id=user_id)) == 1)
@@ -283,9 +293,11 @@ async def main() -> None:
         for label, ok in _checks:
             if not ok:
                 print(f"  ✗ {label}")
-        print("\n[数据库终态]")
-        print("  订阅:", [(s["id"], s["source"], s["dest_kind"], s["enabled"],
-                        s["interval_minutes"]) for s in store.list_subscriptions(user_id=user_id)])
+        print("\\n[数据库终态]")
+        print("  订阅:", [(s["id"], [x["source"] for x in s["sources"]],
+                        [(d["kind"], d["chat_id"]) for d in s["dests"]],
+                        s["enabled"], s["interval_minutes"])
+                       for s in store.list_subscriptions(user_id=user_id)])
         print("  频道:", store.list_chats())
     finally:
         ExtBot.send_message, ExtBot.edit_message_text = original_send, original_edit

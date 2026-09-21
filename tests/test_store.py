@@ -38,13 +38,48 @@ def test_subscription_crud_and_template_roundtrip(tmp_path):
                                     dest_kind="dm", dest_chat_id=1, dest_title="私聊",
                                     interval_minutes=20, last_seen_id=100)
     sub = store.get_subscription(sub_id)
-    assert sub["source"] == "chan"
+    assert [s["source"] for s in sub["sources"]] == ["chan"]
+    assert sub["sources"][0]["last_seen_id"] == 100
+    assert [(d["kind"], d["chat_id"]) for d in sub["dests"]] == [("dm", 1)]
     assert template_of(sub) == template  # JSON 往返无损
     store.set_subscription(sub_id, interval_minutes=30, enabled=0)
     sub = store.get_subscription(sub_id)
     assert sub["interval_minutes"] == 30 and sub["enabled"] == 0
     store.delete_subscription(sub_id)
     assert store.get_subscription(sub_id) is None
+    assert store.sub_sources(sub_id) == [] and store.sub_dests(sub_id) == []  # 级联清理
+
+
+def test_sub_sources_and_dests_n_to_n(tmp_path):
+    """n 源 ↔ m 目的地：增删、去重、独立游标。"""
+    store = _store(tmp_path)
+    sub_id = store.add_subscription(
+        user_id=1, template=make_template(), interval_minutes=20,
+        sources=[{"source": "a", "last_seen_id": 10},
+                 {"source": "b", "last_seen_id": 20}],
+        dests=[{"kind": "dm", "chat_id": 1, "title": "私聊"},
+               {"kind": "channel", "chat_id": -1005, "title": "频道"}])
+    sub = store.get_subscription(sub_id)
+    assert [s["source"] for s in sub["sources"]] == ["a", "b"]
+    assert [d["chat_id"] for d in sub["dests"]] == [1, -1005]
+
+    store.add_sub_source(sub_id, "a")  # 重复 → 忽略
+    store.add_sub_source(sub_id, "c", last_seen_id=30)
+    store.add_sub_dest(sub_id, "dm", 1)  # 重复 → 忽略
+    store.add_sub_dest(sub_id, "channel", -1006, "频道2")
+    sub = store.get_subscription(sub_id)
+    assert [s["source"] for s in sub["sources"]] == ["a", "b", "c"]
+    assert [d["chat_id"] for d in sub["dests"]] == [1, -1005, -1006]
+
+    store.mark_source_run(sub["sources"][1]["id"], 99)  # 只有 b 的游标推进
+    sub = store.get_subscription(sub_id)
+    assert [s["last_seen_id"] for s in sub["sources"]] == [10, 99, 30]
+
+    store.remove_sub_source(sub["sources"][0]["id"])
+    store.remove_sub_dest(sub["dests"][0]["id"])
+    sub = store.get_subscription(sub_id)
+    assert [s["source"] for s in sub["sources"]] == ["b", "c"]
+    assert [d["chat_id"] for d in sub["dests"]] == [-1005, -1006]
 
 
 def test_due_subscriptions_respects_interval_and_enabled(tmp_path):
@@ -69,7 +104,7 @@ def test_mark_run_updates_cursor_and_time(tmp_path):
                                     interval_minutes=20, last_seen_id=100)
     store.mark_run(sub_id, 333)
     sub = store.get_subscription(sub_id)
-    assert sub["last_seen_id"] == 333 and sub["last_run_at"]
+    assert sub["sources"][0]["last_seen_id"] == 333 and sub["last_run_at"]
 
 
 def test_logs_recorded(tmp_path):
@@ -147,3 +182,32 @@ def test_migration_adds_usage_token_columns(tmp_path):
     store = Store(path)
     store.record_usage(1, "jev", 2, input_tokens=50, output_tokens=5)
     assert store.usage_rollup(user_id=1)["jev"] == {"count": 2, "in": 50, "out": 5}
+
+
+def test_migration_splits_legacy_subscription(tmp_path):
+    """旧库（单源单目的地 subscriptions）升级：重建表并拆分到 sub_sources/sub_dests。"""
+    import sqlite3
+
+    path = str(tmp_path / "legacy.db")
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " user_id INTEGER NOT NULL, source TEXT NOT NULL, template_json TEXT NOT NULL,"
+        " dest_kind TEXT NOT NULL, dest_chat_id INTEGER NOT NULL, dest_title TEXT,"
+        " interval_minutes INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,"
+        " last_seen_id INTEGER, last_run_at TEXT, created_at TEXT NOT NULL)")
+    conn.execute(
+        "INSERT INTO subscriptions(user_id, source, template_json, dest_kind,"
+        " dest_chat_id, dest_title, interval_minutes, enabled, last_seen_id, created_at)"
+        " VALUES(1, 'legacy', ?, 'dm', 1, '私聊', 20, 1, 500, '2026-01-01')",
+        (make_template().model_dump_json(),))
+    conn.commit()
+    conn.close()
+    store = Store(path)
+    sub = store.get_subscription(1)
+    assert [s["source"] for s in sub["sources"]] == ["legacy"]
+    assert sub["sources"][0]["last_seen_id"] == 500
+    assert [(d["kind"], d["chat_id"]) for d in sub["dests"]] == [("dm", 1)]
+    assert template_of(sub) == make_template()
+    cols = {row["name"] for row in store._query("PRAGMA table_info(subscriptions)")}
+    assert "source" not in cols and "dest_chat_id" not in cols  # 旧列已移除

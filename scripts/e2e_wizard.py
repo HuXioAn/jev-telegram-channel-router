@@ -89,6 +89,13 @@ async def run_wizard(app, user_id: int, channel: str, description: str) -> int |
                                     message=_command(user_id, "/new")))
     await _step(app, f"发送频道 {channel}",
                 Update(update_id=_next_id(), message=_message(user_id, channel)))
+    manager = next((m for m in reversed(_state["outbox"])
+                    if m.text and m.text.startswith("📡")), None)
+    if manager is None:
+        print("❌ 未找到源频道管理器消息")
+        return None
+    await _step(app, "点击「✅ 完成」（源频道）",
+                _callback(user_id, manager, "ms:done:new"))
     await _step(app, f"发送描述「{description}」",
                 Update(update_id=_next_id(), message=_message(user_id, description)))
 
@@ -98,7 +105,9 @@ async def run_wizard(app, user_id: int, channel: str, description: str) -> int |
         print("❌ 未找到模板确认消息")
         return None
     await _step(app, "点击「✅ 使用这个模板」", _callback(user_id, confirm, "tpl:confirm"))
-    await _step(app, "点击「📬 发到我的私聊」", _callback(user_id, confirm, "dst:dm"))
+    await _step(app, "点击「📬 加私聊」", _callback(user_id, confirm, "md:dm:new"))
+    await _step(app, "点击「✅ 完成」（目的地）",
+                _callback(user_id, confirm, "md:done:new"))
     await _step(app, "点击「20 分钟」", _callback(user_id, confirm, "iv:20"))
     return _detect_sub_id()
 
@@ -168,10 +177,12 @@ async def main() -> None:
 
         store = Store(settings.db_path)
         row = store.get_subscription(sub_id)
-        print("\n[数据库] 订阅行：")
-        for key in ("id", "user_id", "source", "dest_kind", "dest_chat_id",
-                    "dest_title", "interval_minutes", "enabled", "last_seen_id"):
-            print(f"   {key} = {row[key]}")
+        print("\n[数据库] 订阅：")
+        print(f"   id = {row['id']}｜user_id = {row['user_id']}")
+        print(f"   源频道 = {[s['source'] for s in row['sources']]}")
+        print(f"   游标 = {[s['last_seen_id'] for s in row['sources']]}")
+        print(f"   目的地 = {[(d['kind'], d['chat_id'], d['title']) for d in row['dests']]}")
+        print(f"   频率 = {row['interval_minutes']} 分钟｜enabled = {row['enabled']}")
     finally:
         ExtBot.send_message = original_send
         ExtBot.edit_message_text = original_edit

@@ -28,17 +28,29 @@ CREATE TABLE IF NOT EXISTS chats (
 CREATE TABLE IF NOT EXISTS subscriptions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
-    source TEXT NOT NULL,
     template_json TEXT NOT NULL,
-    dest_kind TEXT NOT NULL,
-    dest_chat_id INTEGER NOT NULL,
-    dest_title TEXT,
     interval_minutes INTEGER NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
-    last_seen_id INTEGER,
     last_run_at TEXT,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sub_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sub_id INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    last_seen_id INTEGER,
+    UNIQUE(sub_id, source)
+);
+CREATE INDEX IF NOT EXISTS idx_sub_sources ON sub_sources(sub_id);
+CREATE TABLE IF NOT EXISTS sub_dests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sub_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    chat_id INTEGER NOT NULL,
+    title TEXT,
+    UNIQUE(sub_id, chat_id)
+);
+CREATE INDEX IF NOT EXISTS idx_sub_dests ON sub_dests(sub_id);
 CREATE TABLE IF NOT EXISTS logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sub_id INTEGER,
@@ -118,6 +130,24 @@ class Store:
             for name, ddl in columns.items():
                 if name not in cols:
                     self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+        # 单源单目的地 → n:n：旧 subscriptions 重建，数据拆入 sub_sources / sub_dests
+        sub_cols = {row["name"] for row in
+                    self._conn.execute("PRAGMA table_info(subscriptions)")}
+        if "source" in sub_cols:
+            self._conn.execute("ALTER TABLE subscriptions RENAME TO subscriptions_old")
+            self._conn.executescript(_SCHEMA)
+            self._conn.execute(
+                "INSERT INTO subscriptions(id, user_id, template_json, interval_minutes,"
+                " enabled, last_run_at, created_at) "
+                "SELECT id, user_id, template_json, interval_minutes, enabled,"
+                " last_run_at, created_at FROM subscriptions_old")
+            self._conn.execute(
+                "INSERT OR IGNORE INTO sub_sources(sub_id, source, last_seen_id) "
+                "SELECT id, source, last_seen_id FROM subscriptions_old")
+            self._conn.execute(
+                "INSERT OR IGNORE INTO sub_dests(sub_id, kind, chat_id, title) "
+                "SELECT id, dest_kind, dest_chat_id, dest_title FROM subscriptions_old")
+            self._conn.execute("DROP TABLE subscriptions_old")
 
     def close(self) -> None:
         with self._lock:
@@ -256,29 +286,84 @@ class Store:
         return self._query(sql, tuple(args))
 
     # ----------------------------------------------------- subscriptions
-    def add_subscription(self, *, user_id: int, source: str, template: Template,
-                         dest_kind: str, dest_chat_id: int, dest_title: str,
-                         interval_minutes: int, last_seen_id: int | None) -> int:
+    def add_subscription(self, *, user_id: int, template: Template,
+                         interval_minutes: int,
+                         sources: list[dict] | None = None,
+                         dests: list[dict] | None = None,
+                         source: str | None = None,
+                         last_seen_id: int | None = None,
+                         dest_kind: str | None = None,
+                         dest_chat_id: int | None = None,
+                         dest_title: str | None = None) -> int:
+        """新建订阅（n 源 → m 目的地）。旧单源/单目的地签名自动转成单元素列表。"""
+        if source is not None:
+            sources = [{"source": source, "last_seen_id": last_seen_id}]
+        if dest_kind is not None and dest_chat_id is not None:
+            dests = [{"kind": dest_kind, "chat_id": dest_chat_id, "title": dest_title}]
         cursor = self._run(
-            "INSERT INTO subscriptions(user_id, source, template_json, dest_kind, "
-            "dest_chat_id, dest_title, interval_minutes, enabled, last_seen_id, created_at) "
-            "VALUES(?,?,?,?,?,?,?,1,?,?)",
-            (user_id, source, template.model_dump_json(), dest_kind, dest_chat_id,
-             dest_title, interval_minutes, last_seen_id, _now()))
-        return int(cursor.lastrowid or 0)
+            "INSERT INTO subscriptions(user_id, template_json, interval_minutes,"
+            " enabled, created_at) VALUES(?,?,?,1,?)",
+            (user_id, template.model_dump_json(), interval_minutes, _now()))
+        sub_id = int(cursor.lastrowid or 0)
+        for item in sources or []:
+            self.add_sub_source(sub_id, item["source"], item.get("last_seen_id"))
+        for item in dests or []:
+            self.add_sub_dest(sub_id, item["kind"], int(item["chat_id"]), item.get("title"))
+        return sub_id
+
+    def add_sub_source(self, sub_id: int, source: str,
+                       last_seen_id: int | None = None) -> None:
+        self._run(
+            "INSERT INTO sub_sources(sub_id, source, last_seen_id) VALUES(?,?,?) "
+            "ON CONFLICT(sub_id, source) DO NOTHING",
+            (sub_id, source, last_seen_id))
+
+    def remove_sub_source(self, source_id: int) -> None:
+        self._run("DELETE FROM sub_sources WHERE id=?", (source_id,))
+
+    def sub_sources(self, sub_id: int) -> list[dict]:
+        return self._query(
+            "SELECT * FROM sub_sources WHERE sub_id=? ORDER BY id", (sub_id,))
+
+    def add_sub_dest(self, sub_id: int, kind: str, chat_id: int,
+                     title: str | None = None) -> None:
+        self._run(
+            "INSERT INTO sub_dests(sub_id, kind, chat_id, title) VALUES(?,?,?,?) "
+            "ON CONFLICT(sub_id, chat_id) DO UPDATE SET kind=excluded.kind,"
+            " title=excluded.title",
+            (sub_id, kind, chat_id, title))
+
+    def remove_sub_dest(self, dest_id: int) -> None:
+        self._run("DELETE FROM sub_dests WHERE id=?", (dest_id,))
+
+    def sub_dests(self, sub_id: int) -> list[dict]:
+        return self._query(
+            "SELECT * FROM sub_dests WHERE sub_id=? ORDER BY id", (sub_id,))
 
     def list_subscriptions(self, user_id: int | None = None) -> list[dict]:
         if user_id is None:
-            return self._query("SELECT * FROM subscriptions ORDER BY id")
-        return self._query("SELECT * FROM subscriptions WHERE user_id=? ORDER BY id", (user_id,))
+            rows = self._query("SELECT * FROM subscriptions ORDER BY id")
+        else:
+            rows = self._query(
+                "SELECT * FROM subscriptions WHERE user_id=? ORDER BY id", (user_id,))
+        return [self._with_children(row) for row in rows]
 
     def get_subscription(self, sub_id: int) -> dict | None:
         rows = self._query("SELECT * FROM subscriptions WHERE id=?", (sub_id,))
-        return rows[0] if rows else None
+        return self._with_children(rows[0]) if rows else None
+
+    def _with_children(self, sub: dict) -> dict:
+        sub["sources"] = self.sub_sources(sub["id"])
+        sub["dests"] = self.sub_dests(sub["id"])
+        return sub
+
+    def mark_source_run(self, source_id: int, last_seen_id: int | None) -> None:
+        """推进单个源频道的抓取游标（各源独立）。"""
+        self._run("UPDATE sub_sources SET last_seen_id=? WHERE id=?",
+                  (last_seen_id, source_id))
 
     def set_subscription(self, sub_id: int, **fields) -> None:
-        allowed = {"source", "dest_kind", "dest_chat_id", "dest_title",
-                   "interval_minutes", "enabled", "last_seen_id", "last_run_at"}
+        allowed = {"template_json", "interval_minutes", "enabled", "last_run_at"}
         updates = {key: value for key, value in fields.items() if key in allowed}
         if not updates:
             return
@@ -287,20 +372,28 @@ class Store:
                   (*updates.values(), sub_id))
 
     def delete_subscription(self, sub_id: int) -> None:
+        self._run("DELETE FROM sub_sources WHERE sub_id=?", (sub_id,))
+        self._run("DELETE FROM sub_dests WHERE sub_id=?", (sub_id,))
         self._run("DELETE FROM subscriptions WHERE id=?", (sub_id,))
 
     def due_subscriptions(self, now: datetime) -> list[dict]:
-        """到期（enabled 且距上次运行超过 interval）的订阅。"""
+        """到期（enabled 且距上次运行超过 interval）的订阅（含源/目的地）。"""
         due, rows = [], self._query("SELECT * FROM subscriptions WHERE enabled=1")
         for row in rows:
             last = _parse_ts(row["last_run_at"])
             if last is None or now - last >= timedelta(minutes=row["interval_minutes"]):
-                due.append(row)
+                due.append(self._with_children(row))
         return due
 
-    def mark_run(self, sub_id: int, last_seen_id: int | None, when: str | None = None) -> None:
-        self._run("UPDATE subscriptions SET last_seen_id=?, last_run_at=? WHERE id=?",
-                  (last_seen_id, when or _now(), sub_id))
+    def mark_run(self, sub_id: int, last_seen_id: int | None = None,
+                 when: str | None = None) -> None:
+        """记订阅级运行时间；last_seen_id 仅兼容旧签名（写首个源频道游标）。"""
+        self._run("UPDATE subscriptions SET last_run_at=? WHERE id=?",
+                  (when or _now(), sub_id))
+        if last_seen_id is not None:
+            rows = self.sub_sources(sub_id)
+            if rows:
+                self.mark_source_run(rows[0]["id"], last_seen_id)
 
     # -------------------------------------------------------------- logs
     def log(self, sub_id: int | None, kind: str, detail: str = "") -> None:
