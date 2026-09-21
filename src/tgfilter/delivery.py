@@ -1,4 +1,4 @@
-"""投递层：把摘要消息发给 DM 或频道。"""
+"""Delivery layer: send digest messages to a DM or channel."""
 from __future__ import annotations
 
 import asyncio
@@ -29,19 +29,21 @@ class Sender:
             try:
                 await self._bot.send_message(chat_id=chat_id, text=text)
                 return
-            except RetryAfter as exc:  # Telegram 限流：按提示等待后重试
+            except RetryAfter as exc:  # Telegram rate limit: wait as told, then retry
                 seconds = float(getattr(exc.retry_after, "total_seconds",
                                         exc.retry_after)) + 0.5
                 if attempt >= _SEND_ATTEMPTS:
                     raise DeliveryError(
-                        f"发送被限流（等待 {seconds:.0f}s 重试 {attempt} 次仍失败）") from exc
-                logger.warning("发送被限流，等待 %.1fs 后重试（%s/%s）",
+                        f"rate limited (still failing after {attempt} attempts, "
+                        f"{seconds:.0f}s waits)") from exc
+                logger.warning("send rate-limited, retrying in %.1fs (%s/%s)",
                                seconds, attempt, _SEND_ATTEMPTS)
                 await asyncio.sleep(seconds)
             except Forbidden as exc:
                 raise DeliveryError(
-                    "无权限发送：用户未与机器人对话，或机器人不在目标频道") from exc
+                    "cannot post: the user never started the bot, or the bot is "
+                    "not a member of the target channel") from exc
             except BadRequest as exc:
-                raise DeliveryError(f"发送被拒：{exc.message}") from exc
+                raise DeliveryError(f"rejected: {exc.message}") from exc
             except TelegramError as exc:
-                raise DeliveryError(f"发送失败：{exc}") from exc
+                raise DeliveryError(f"send failed: {exc}") from exc

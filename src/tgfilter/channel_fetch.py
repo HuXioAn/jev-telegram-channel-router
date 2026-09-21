@@ -1,4 +1,4 @@
-"""公开频道抓取：走 t.me/s/ 网页预览（无需任何权限）。"""
+"""Public channel fetching: goes through the t.me/s/ web preview (no permissions needed)."""
 from __future__ import annotations
 
 import asyncio
@@ -26,11 +26,11 @@ _TITLE_RE = re.compile(r'<meta property="og:title" content="([^"]*)"')
 
 
 class ChannelError(Exception):
-    """频道不可访问（不存在 / 未开启网页预览 / 抓取失败）。"""
+    """Channel is not reachable (missing / web preview disabled / fetch failed)."""
 
 
 def normalize_channel_ref(ref: str) -> str:
-    """把 @name / t.me/name / https://t.me/s/name / t.me/name/123 规范为 'name'。"""
+    """Normalize @name / t.me/name / https://t.me/s/name / t.me/name/123 into 'name'."""
     ref = (ref or "").strip()
     if not ref:
         raise ValueError("频道引用为空")
@@ -57,7 +57,7 @@ def parse_title(page_html: str) -> str:
 
 
 def parse_posts(page_html: str, channel: str) -> list[Post]:
-    """从预览 HTML 中解析消息（结构见 tests/fixtures）。"""
+    """Parse posts out of the preview HTML (structure see tests/fixtures)."""
     posts: list[Post] = []
     for block in _BLOCK_SPLIT_RE.split(page_html)[1:]:
         id_match = _POST_ID_RE.search(block)
@@ -94,13 +94,13 @@ class ChannelInfo:
 
 
 class ChannelFetcher:
-    """限速礼貌抓取；分页游标即「上次位置」，天然支持增量续抓。"""
+    """Rate-limit-polite fetching; the paging cursor is the "last seen position", so incremental resumes are natural."""
 
     def __init__(self, http: httpx.AsyncClient, page_delay: float = 0.6, max_pages: int = 200):
         self._http = http
         self._delay = page_delay
         self._max_pages = max_pages
-        self._sleep = asyncio.sleep  # 可注入（测试）
+        self._sleep = asyncio.sleep  # injectable (tests)
 
     async def _get(self, url: str, tries: int = 3) -> str:
         last: object = "unknown"
@@ -126,7 +126,7 @@ class ChannelFetcher:
                            head_id=max(p.id for p in posts), posts=posts)
 
     async def fetch_since(self, channel: str, after_id: int) -> tuple[list[Post], int]:
-        """抓取 id > after_id 的全部新消息；返回（升序列表, 新游标）。空窗自然停止。"""
+        """Fetch every new post with id > after_id; returns (ascending list, new cursor). An empty window stops it naturally."""
         posts: list[Post] = []
         cursor = after_id
         for _ in range(self._max_pages):

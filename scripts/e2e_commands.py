@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""全功能端到端覆盖：用合成 Update 驱动真实 Application，逐项跑通所有入口。
+"""Full-feature end-to-end coverage: drive a real Application with synthetic Updates and exercise every entry point.
 
-覆盖：/help /list /cancel /test(含异常编号) · 向导全分支（Power Mode JSON、
-重新描述、微调、参数校验、URL 变体）· 订阅按钮（暂停/恢复/试跑/删除）·
-频道目的地三种分支（真实校验失败 / 非管理员 / 管理员）· 频道登记与移除
-（合成 my_chat_member）· UI 回调（菜单按钮）· 错误兜底。
+Coverage: /help /list /cancel /test (including a bogus id) · every wizard branch (Power Mode JSON,
+re-describe, adjust, argument validation, URL variants) · subscription buttons (pause/resume/dry run/delete) ·
+the three channel-destination branches (real validation failure / non-admin / admin) · channel registration and removal
+(synthetic my_chat_member) · UI callbacks (menu buttons) · error fallback.
 
-真实链路：真 Bot API（消息真实发到用户 DM）/ 真 DeepSeek 编译 / 真 Jev 试跑；
-仅 get_chat_member 的管理员分支为注入模拟（真实频道由用户加 bot 后实测）。
-用法：python scripts/e2e_commands.py <user_id>
+Real chain: real Bot API (messages really reach the user's DM) / real DeepSeek compilation / real Jev dry run;
+only the admin branch of get_chat_member is injected as a mock (real channels are exercised after the user adds the bot).
+Usage: python scripts/e2e_commands.py <user_id>
 """
 from __future__ import annotations
 
@@ -122,7 +122,7 @@ async def main() -> None:
     store = Store(settings.db_path)
     app = build_application(settings)
 
-    # PTB 对象 __slots__ 禁实例级 monkeypatch → 类级补丁记录所有出站消息
+    # PTB objects' __slots__ forbid instance-level monkeypatching → patch the class to record every outbound message
     original_send, original_edit = ExtBot.send_message, ExtBot.edit_message_text
     original_member = ExtBot.get_chat_member
 
@@ -155,14 +155,14 @@ async def main() -> None:
     CMD = lambda text: Update(update_id=_next_id(), message=_command(user_id, text))  # noqa: E731
 
     try:
-        # ---------- A. 基础命令 ----------
+        # ---------- A. basic commands ----------
         await _step(app, "/help", CMD("/help"))
         await _step(app, "/list（当前仅订阅 #1）", CMD("/list"))
         await _step(app, "/cancel（无进行中向导）", CMD("/cancel"))
         await _step(app, "/test 1（真实试跑：抓取 + Jev）", CMD("/test 1"))
         await _step(app, "/test 999（不存在的编号）", CMD("/test 999"))
 
-        # ---------- E1. 频道登记（合成：被加为管理员） ----------
+        # ---------- E1. channel registration (synthetic: added as administrator) ----------
         bot_user = User(id=app.bot.id, first_name="bot", is_bot=True)
         mark = _mark()
         await _step(app, "频道加入事件（bot 被加为频道管理员）",
@@ -178,7 +178,7 @@ async def main() -> None:
         _check("频道已登记进数据库", any(c["chat_id"] == FAKE_CHAT_ID for c in chats))
         _check("用户收到「已登记」通知", any("测试频道" in t for t in _new_texts(mark)))
 
-        # ---------- C1. 向导：Power Mode + 频道路径 ----------
+        # ---------- C1. wizard: Power Mode + channel path ----------
         await _step(app, "/new", CMD("/new"))
         await _step(app, "发送频道 URL 变体", U("https://t.me/Financial_Express"))
         manager = _must(_find_last(lambda t: t.startswith("📡")), "源频道管理器")
@@ -245,7 +245,7 @@ async def main() -> None:
         await _step(app, f"点击 #{sid}「删除」", _callback(user_id, list2, f"sub:delete:{sid}"))
         _check("删除生效", store.get_subscription(sid) is None)
 
-        # ---------- C2. 向导：自然语言 + 重新描述 + 微调 + 私聊分支 ----------
+        # ---------- C2. wizard: natural language + re-describe + adjust + DM branch ----------
         await _step(app, "/new（自然语言分支）", CMD("/new"))
         await _step(app, "发送频道名", U("Financial_Express"))
         manager2 = _must(_find_last(lambda t: t.startswith("📡")), "源频道管理器 2")
@@ -266,12 +266,12 @@ async def main() -> None:
         _check("取消后未产生新订阅",
                len(store.list_subscriptions(user_id=user_id)) == 1)
 
-        # ---------- C3. 向导：非法频道名 ----------
+        # ---------- C3. wizard: invalid channel name ----------
         await _step(app, "/new（非法源校验）", CMD("/new"))
         await _step(app, "发送非法频道名", U("!!! 这根本不是频道 !!!"))
         await _step(app, "/cancel", CMD("/cancel"))
 
-        # ---------- D. UI 回调 + 错误兜底 ----------
+        # ---------- D. UI callbacks + error fallback ----------
         last = _state["outbox"][-1][1]
         await _step(app, "菜单按钮「我的订阅」(ui:list)", _callback(user_id, last, "ui:list"))
         await _step(app, "菜单按钮「帮助」(ui:help)", _callback(user_id, last, "ui:help"))
@@ -280,7 +280,7 @@ async def main() -> None:
         await _step(app, "畸形回调 sub:boom:x（错误兜底应回复 ⚠️）",
                     _callback(user_id, last, "sub:boom:x"))
 
-        # ---------- E2. 频道移除 ----------
+        # ---------- E2. channel removal ----------
         await _step(app, "频道移除事件（bot 被移出）",
                     _member_update(app.bot, user_id,
                                    ChatMemberLeft(
@@ -288,7 +288,7 @@ async def main() -> None:
         _check("频道已从数据库移除",
                not any(c["chat_id"] == FAKE_CHAT_ID for c in store.list_chats()))
 
-        # ---------- 汇总 ----------
+        # ---------- summary ----------
         passed = sum(1 for _, ok in _checks if ok)
         print(f"\n{'=' * 50}\n检查项：{passed}/{len(_checks)} 通过")
         for label, ok in _checks:

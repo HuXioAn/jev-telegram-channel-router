@@ -1,4 +1,4 @@
-"""频道抓取：解析、规范化、分页续抓、错误路径。"""
+"""Channel fetching: parsing, normalization, paged resume, error paths."""
 from __future__ import annotations
 
 import asyncio
@@ -11,7 +11,7 @@ from tgfilter.channel_fetch import (ChannelError, ChannelFetcher, normalize_chan
                                     parse_posts, parse_title)
 
 
-# ------------------------------------------------------------ 引用规范化
+# ------------------------------------------------------------ ref normalization
 @pytest.mark.parametrize("raw,expected", [
     ("@Financial_Express", "Financial_Express"),
     ("Financial_Express", "Financial_Express"),
@@ -34,12 +34,12 @@ def test_normalize_rejects(bad):
         normalize_channel_ref(bad)
 
 
-# ------------------------------------------------------------------ 解析
+# ------------------------------------------------------------------ parsing
 def test_parse_posts():
     html = make_page("chan", [101, 102])
     posts = parse_posts(html, "chan")
     assert [p.id for p in posts] == [101, 102]
-    assert posts[0].text == "第 101 条\n内容 & 更多"  # <br/> → \n，实体解码
+    assert posts[0].text == "第 101 条\n内容 & 更多"  # <br/> → \n, entity decoded
     assert posts[0].url == "https://t.me/chan/101"
     assert posts[0].date is not None and posts[0].date.year == 2026
 
@@ -53,7 +53,7 @@ def test_parse_title():
     assert parse_title("<html></html>") == ""
 
 
-# ------------------------------------------------------------------ 抓取
+# ------------------------------------------------------------------ fetching
 def _noop_sleep(_seconds: float):
     async def run():
         return None

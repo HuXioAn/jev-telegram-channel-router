@@ -1,1 +1,1 @@
-"""Bot 层（python-telegram-bot）。"""
+"""Bot layer (python-telegram-bot)."""

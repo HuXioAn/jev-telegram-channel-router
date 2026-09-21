@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""冒烟测试：不需要 bot token —— 真抓 t.me 预览，并（可选）真调 Jev 分类。
+"""Smoke test: no bot token needed — really fetches the t.me preview and (optionally) really calls Jev for classification.
 
-用法：
-    python scripts/smoke_live.py [频道名]
+Usage:
+    python scripts/smoke_live.py [channel name]
 
-TYPESAFE_API_KEY 从环境变量或 .env 读取；未配置时跳过 Jev 部分。
+TYPESAFE_API_KEY is read from the environment or .env; the Jev part is skipped when it is not configured.
 """
 from __future__ import annotations
 

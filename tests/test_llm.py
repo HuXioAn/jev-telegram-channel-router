@@ -1,4 +1,4 @@
-"""模板编译器：正常路径、围栏剥离、JSON mode 降级、修复重试、失败抛错。"""
+"""Template compiler: happy path, fence stripping, JSON mode degradation, repair retry, raising on failure."""
 from __future__ import annotations
 
 import json
@@ -107,7 +107,7 @@ async def test_compile_retries_with_error_note_on_invalid_json():
     finally:
         await http.aclose()
     assert template.name == "中国"
-    assert usage["calls"] == 2  # 修复重试也计调用与 token
+    assert usage["calls"] == 2  # repair retries also count as calls and tokens
     assert usage["input_tokens"] == 240 and usage["output_tokens"] == 60
     assert len(bodies) == 2
     assert "corrected" in bodies[1]["messages"][-1]["content"]
@@ -121,7 +121,7 @@ async def test_compile_raises_after_two_failures():
     with pytest.raises(LLMError) as err:
         await compiler.compile("中国相关的消息")
     await http.aclose()
-    assert err.value.usage["calls"] == 2  # 失败也带已产生的真实用量
+    assert err.value.usage["calls"] == 2  # failures carry the real usage produced so far
 
 
 async def test_compile_rejects_schema_violations():
@@ -153,7 +153,7 @@ async def test_compile_with_feedback_includes_previous_template():
     user_message = bodies[0]["messages"][1]["content"]
     assert "Requested adjustment" in user_message
     assert "门槛提高到 0.9" in user_message
-    assert "china" in user_message  # 上一版模板被带上
+    assert "china" in user_message  # the previous template is included
 
 
 async def test_system_prompt_mandates_english_output_and_covers_jev_rules():
@@ -169,13 +169,13 @@ async def test_system_prompt_mandates_english_output_and_covers_jev_rules():
     finally:
         await http.aclose()
     system = bodies[0]["messages"][0]["content"]
-    assert "ENGLISH" in system  # 模板内容一律英文
+    assert "ENGLISH" in system  # template content is always English
     for token in ("noul", "choice", "score", "not_in", "score:", "snap judgment"):
         assert token in system, token
 
 
 async def test_compile_degrades_when_temperature_rejected():
-    """部分推理模型拒绝 temperature：应再降一级，且不改 JSON 解析结果。"""
+    """Some reasoning models reject temperature: degrade one more step, without changing the JSON parse result."""
     bodies = []
 
     def handler(request):
@@ -198,7 +198,7 @@ async def test_compile_degrades_when_temperature_rejected():
 
 
 async def test_compile_accepts_input_tokens_style_usage():
-    """部分兼容端点用 input_tokens/output_tokens 命名，同样要能捕获。"""
+    """Some compatible endpoints name them input_tokens/output_tokens; those must be captured as well."""
     def handler(request):
         return httpx.Response(200, json={
             "choices": [{"message": {"role": "assistant",

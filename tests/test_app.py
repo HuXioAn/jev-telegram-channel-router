@@ -1,4 +1,4 @@
-"""app 层：自定义并发处理器（全局并发 + 每聊天串行）。"""
+"""app layer: custom concurrency processor (global concurrency + per-chat serialization)."""
 from __future__ import annotations
 
 import asyncio
@@ -17,7 +17,7 @@ def _upd(update_id: int, chat_id: int) -> Update:
 
 
 async def test_same_chat_updates_run_in_order():
-    """同一聊天的更新严格串行（先后顺序保持）。"""
+    """Updates for the same chat run strictly in order (sequencing preserved)."""
     proc = PerChatUpdateProcessor(max_concurrent_updates=4)
     await proc.initialize()
     ran: list[str] = []
@@ -35,7 +35,7 @@ async def test_same_chat_updates_run_in_order():
 
 
 async def test_different_chats_run_concurrently():
-    """不同聊天的更新并行执行（互不阻塞）。"""
+    """Updates for different chats run concurrently (they do not block each other)."""
     proc = PerChatUpdateProcessor(max_concurrent_updates=4)
     await proc.initialize()
     ran: list[str] = []

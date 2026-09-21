@@ -1,16 +1,14 @@
-"""展示与消息合成：模板摘要、推送摘要、Telegram 分块。"""
+"""Presentation helpers: template summaries, digests, Telegram chunking."""
 from __future__ import annotations
 
 import json
 
+from .i18n import t
 from .models import Post, Template
-
-_CHUNK_MARK = "（{i}/{n}）"
-_TEST_MARK = "🧪 试跑样张（非正式推送）\n\n"
 
 
 def _fmt_entry(value: object) -> str:
-    """criteria 条目渲染：字符串原样；结构化对象/数组压成紧凑 JSON；None → —。"""
+    """Render a criteria entry: strings as-is; structured values as compact JSON; None → —."""
     if value is None:
         return "—"
     if isinstance(value, str):
@@ -18,8 +16,8 @@ def _fmt_entry(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def match_summary(template: Template) -> str:
-    """把 match 规则渲染成一行人类可读文本。"""
+def match_summary(lang: str, template: Template) -> str:
+    """Render the match rule as one human-readable line."""
     parts: list[str] = []
     for cond in template.match.conditions:
         question = template.questions.get(cond.question)
@@ -29,37 +27,41 @@ def match_summary(template: Template) -> str:
         else:
             value = str(cond.value)
         parts.append(f"{label} {cond.op} {value}")
-    return (" 且 " if template.match.logic == "all" else " 或 ").join(parts) or "（未定义）"
+    joiner = t(lang, "fmt_and" if template.match.logic == "all" else "fmt_or")
+    return joiner.join(parts) or t(lang, "fmt_undefined")
 
 
-def template_summary(template: Template) -> str:
-    """给用户确认用的模板全貌。"""
-    lines = [f"🧩 模板：{template.name or '（未命名）'}", ""]
+def template_summary(lang: str, template: Template) -> str:
+    """Full template rendering shown to the user for confirmation."""
+    lines = [t(lang, "fmt_template_title",
+               name=template.name or t(lang, "fmt_unnamed")), ""]
     for index, (qid, question) in enumerate(template.questions.items(), 1):
-        lines.append(f"{index}. 「{question.title or qid}」（{question.type}）")
+        lines.append(t(lang, "fmt_q_line", index=index,
+                       title=question.title or qid, type=question.type))
         instructions = question.instructions
         if not isinstance(instructions, str):
             instructions = json.dumps(instructions, ensure_ascii=False)
-        lines.append(f"   问题：{instructions}")
+        lines.append(t(lang, "fmt_instructions", text=instructions))
         if question.type == "noul" and question.criteria:
-            lines.append(f"   是：{_fmt_entry(question.criteria.get('true'))}")
-            lines.append(f"   否：{_fmt_entry(question.criteria.get('false'))}")
+            lines.append(t(lang, "fmt_yes", value=_fmt_entry(question.criteria.get("true"))))
+            lines.append(t(lang, "fmt_no", value=_fmt_entry(question.criteria.get("false"))))
         elif question.type == "choice":
-            lines.append("   选项：" + " / ".join(question.criteria.keys()))
+            lines.append(t(lang, "fmt_options") + " / ".join(question.criteria.keys()))
         elif question.type == "score":
-            lines.append("   等级：" + " < ".join(
+            lines.append(t(lang, "fmt_levels") + " < ".join(
                 _fmt_entry(item) for item in question.criteria))
     lines.append("")
-    lines.append(f"🎯 命中条件：{match_summary(template)}")
+    lines.append(t(lang, "fmt_match", rule=match_summary(lang, template)))
     return "\n".join(lines)
 
 
 def compose_digest(hits: list[tuple[Post, dict]], *, chunk_limit: int = 3800,
-                   test: bool = False) -> list[str]:
-    """命中列表 → 一条或多条可直接发送的消息文本。
+                   test: bool = False, lang: str = "en") -> list[str]:
+    """Hit list → one or more ready-to-send message texts.
 
-    每条消息只包含「正文 + 链接」，块与块之间以空行分隔；超长自动分块
-    （块尾加（i/n）标记）；test=True 时首块加试跑标头。
+    Each message holds only the post text plus its link, blocks separated by a
+    blank line. Oversized digests are split into chunks (marker at the bottom);
+    test=True prepends the dry-run header to the first chunk.
     """
     if not hits:
         return []
@@ -69,12 +71,12 @@ def compose_digest(hits: list[tuple[Post, dict]], *, chunk_limit: int = 3800,
                                 if part))
 
     chunks = _chunk_blocks(blocks, chunk_limit)
-    if len(chunks) > 1:  # 多段时加（i/n）标记
+    if len(chunks) > 1:  # add the (i/n) marker when split
         total = len(chunks)
-        chunks = [f"{chunk}\n\n{_CHUNK_MARK.format(i=i, n=total)}"
+        chunks = [f"{chunk}\n\n{t(lang, 'chunk_mark', i=i, n=total)}"
                   for i, chunk in enumerate(chunks, 1)]
     if test:
-        chunks[0] = f"{_TEST_MARK}{chunks[0]}"
+        chunks[0] = f"{t(lang, 'test_mark')}{chunks[0]}"
     return chunks
 
 
@@ -91,7 +93,7 @@ def _chunk_blocks(blocks: list[str], limit: int) -> list[str]:
                 chunks.append(current)
                 current = ""
                 continue
-            # 单块自身超限：硬切
+            # a single block over the limit: hard split
             chunks.append(block[:limit])
             block = block[limit:]
             if not block:

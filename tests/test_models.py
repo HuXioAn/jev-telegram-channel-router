@@ -1,4 +1,4 @@
-"""模型与规则求值。"""
+"""Models and rule evaluation."""
 from __future__ import annotations
 
 import pytest
@@ -61,7 +61,7 @@ def test_missing_or_none_answer_is_false():
 
 
 def test_structured_criteria_and_levels_accepted():
-    """criteria 支持 Jev 的结构化条目（what/examples、summary/signals）。"""
+    """criteria accepts Jev's structured entries (what/examples, summary/signals)."""
     tpl = _tpl(
         {"topic": {"type": "choice", "instructions": "?",
                    "criteria": {"deals": {"what": "M&A", "examples": ["tender offer"]},
@@ -86,7 +86,7 @@ def test_jev_questions_strips_title_and_none():
                [{"question": "china", "op": ">=", "value": 0.7}])
     questions = tpl.jev_questions()
     assert "title" not in questions["china"]
-    assert "criteria" not in questions["china"]  # None 被剔除
+    assert "criteria" not in questions["china"]  # None is stripped
     assert questions["china"]["type"] == "noul"
 
 

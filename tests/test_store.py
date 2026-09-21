@@ -1,4 +1,4 @@
-"""SQLite 存储：用户 / 频道 / 订阅 / 到期判定 / 日志。"""
+"""SQLite storage: users / chats / subscriptions / due checks / logs."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -14,7 +14,7 @@ def _store(tmp_path) -> Store:
 def test_user_upsert(tmp_path):
     store = _store(tmp_path)
     store.add_user(1, "a")
-    store.add_user(1, "b")  # 重复 → 更新用户名
+    store.add_user(1, "b")  # duplicate → updates the username
     rows = store._query("SELECT * FROM users")
     assert len(rows) == 1 and rows[0]["username"] == "b"
 
@@ -41,17 +41,17 @@ def test_subscription_crud_and_template_roundtrip(tmp_path):
     assert [s["source"] for s in sub["sources"]] == ["chan"]
     assert sub["sources"][0]["last_seen_id"] == 100
     assert [(d["kind"], d["chat_id"]) for d in sub["dests"]] == [("dm", 1)]
-    assert template_of(sub) == template  # JSON 往返无损
+    assert template_of(sub) == template  # lossless JSON round trip
     store.set_subscription(sub_id, interval_minutes=30, enabled=0)
     sub = store.get_subscription(sub_id)
     assert sub["interval_minutes"] == 30 and sub["enabled"] == 0
     store.delete_subscription(sub_id)
     assert store.get_subscription(sub_id) is None
-    assert store.sub_sources(sub_id) == [] and store.sub_dests(sub_id) == []  # 级联清理
+    assert store.sub_sources(sub_id) == [] and store.sub_dests(sub_id) == []  # cascade cleanup
 
 
 def test_sub_sources_and_dests_n_to_n(tmp_path):
-    """n 源 ↔ m 目的地：增删、去重、独立游标。"""
+    """n sources ↔ m destinations: add/remove, dedup, independent cursors."""
     store = _store(tmp_path)
     sub_id = store.add_subscription(
         user_id=1, template=make_template(), interval_minutes=20,
@@ -63,15 +63,15 @@ def test_sub_sources_and_dests_n_to_n(tmp_path):
     assert [s["source"] for s in sub["sources"]] == ["a", "b"]
     assert [d["chat_id"] for d in sub["dests"]] == [1, -1005]
 
-    store.add_sub_source(sub_id, "a")  # 重复 → 忽略
+    store.add_sub_source(sub_id, "a")  # duplicate → ignored
     store.add_sub_source(sub_id, "c", last_seen_id=30)
-    store.add_sub_dest(sub_id, "dm", 1)  # 重复 → 忽略
+    store.add_sub_dest(sub_id, "dm", 1)  # duplicate → ignored
     store.add_sub_dest(sub_id, "channel", -1006, "频道2")
     sub = store.get_subscription(sub_id)
     assert [s["source"] for s in sub["sources"]] == ["a", "b", "c"]
     assert [d["chat_id"] for d in sub["dests"]] == [1, -1005, -1006]
 
-    store.mark_source_run(sub["sources"][1]["id"], 99)  # 只有 b 的游标推进
+    store.mark_source_run(sub["sources"][1]["id"], 99)  # only b's cursor advances
     sub = store.get_subscription(sub_id)
     assert [s["last_seen_id"] for s in sub["sources"]] == [10, 99, 30]
 
@@ -83,7 +83,7 @@ def test_sub_sources_and_dests_n_to_n(tmp_path):
 
 
 def test_watches_materialize_due_and_retire(tmp_path):
-    """频道级调度：物化（最小游标/最小间隔）、到期判定、退役与重物化。"""
+    """Channel-level scheduling: materialization (minimum cursor / minimum interval), due checks, retirement and re-materialization."""
     store = _store(tmp_path)
     store.add_subscription(user_id=1, source="chan", template=make_template(),
                            dest_kind="dm", dest_chat_id=1, dest_title="私聊",
@@ -93,11 +93,11 @@ def test_watches_materialize_due_and_retire(tmp_path):
                                   interval_minutes=10, last_seen_id=150)
     store.sync_watches(20)
     watch = store.get_watch("chan")
-    assert watch["last_seen_id"] == 100            # 最小游标（不丢消息）
-    assert watch["interval_minutes"] == 10         # 最小间隔
+    assert watch["last_seen_id"] == 100            # minimum cursor (no lost messages)
+    assert watch["interval_minutes"] == 10         # minimum interval
 
     now = datetime.now(timezone.utc)
-    assert [w["channel"] for w in store.due_watches(now)] == ["chan"]  # 从未抓过 → 到期
+    assert [w["channel"] for w in store.due_watches(now)] == ["chan"]  # never fetched → due
     store.mark_watch_fetched("chan", 160, when=now.isoformat())
     assert store.due_watches(now) == []
     later = [w["channel"] for w in store.due_watches(now + timedelta(minutes=10))]
@@ -109,23 +109,23 @@ def test_watches_materialize_due_and_retire(tmp_path):
     assert store.get_watch("chan")["interval_minutes"] == 5
     assert store.due_watches(now + timedelta(minutes=5))[0]["channel"] == "chan"
 
-    store.set_subscription(b_id, enabled=0)        # 暂停不再算观察者
+    store.set_subscription(b_id, enabled=0)        # paused no longer counts as a watcher
     store.sync_watches(20)
-    assert store.get_watch("chan")["interval_minutes"] == 5   # 已有间隔不覆盖
+    assert store.get_watch("chan")["interval_minutes"] == 5   # an existing interval is not overwritten
 
     store.delete_subscription(b_id)
     store.delete_subscription(1)
     store.sync_watches(20)
-    assert store.get_watch("chan") is None         # 无 enabled 观察者 → 退役
+    assert store.get_watch("chan") is None         # no enabled watchers → retired
     store.add_subscription(user_id=3, source="chan", template=make_template(),
                            dest_kind="dm", dest_chat_id=3, dest_title="私聊",
                            interval_minutes=20, last_seen_id=200)
     store.sync_watches(20)
-    assert store.get_watch("chan")["last_seen_id"] == 200      # 重物化
+    assert store.get_watch("chan")["last_seen_id"] == 200      # re-materialized
 
 
 def test_store_reopen_materializes_watches(tmp_path):
-    """旧库升级：重新打开时把既有订阅的源频道物化成 watches。"""
+    """Old database upgrade: on reopen, materialize the source channels of existing subscriptions into watches."""
     path = str(tmp_path / "test.db")
     store = Store(path)
     store.add_subscription(user_id=1, source="chan", template=make_template(),
@@ -141,7 +141,7 @@ def test_judgments_cache_roundtrip_and_prune(tmp_path):
     payload = {"tfp1": {"china": {"type": "noul", "noul": 0.9}}}
     store.save_judgment("chan", 101, payload)
     assert store.judgments_for("chan", [101, 102]) == {101: payload}
-    store.save_judgment("chan", 101, {"tfp1": {"china": None}})   # 覆盖
+    store.save_judgment("chan", 101, {"tfp1": {"china": None}})   # overwrite
     assert store.judgments_for("chan", [101]) == {101: {"tfp1": {"china": None}}}
     assert store.judgments_for("other", [101]) == {}
     old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
@@ -209,7 +209,7 @@ def test_user_fields_and_counts(tmp_path):
 
 
 def test_migration_adds_new_user_columns(tmp_path):
-    """旧库（无 status/配额列）初始化时自动迁移。"""
+    """An old database (without status/quota columns) migrates automatically on init."""
     import sqlite3
 
     path = str(tmp_path / "old.db")
@@ -226,7 +226,7 @@ def test_migration_adds_new_user_columns(tmp_path):
 
 
 def test_migration_adds_usage_token_columns(tmp_path):
-    """旧版 usage 表（无 token 列）初始化时自动迁移，可直接记录与聚合。"""
+    """A legacy usage table (without token columns) migrates automatically on init and can immediately record and roll up."""
     import sqlite3
 
     path = str(tmp_path / "old_usage.db")
@@ -245,7 +245,7 @@ def test_migration_adds_usage_token_columns(tmp_path):
 
 
 def test_migration_splits_legacy_subscription(tmp_path):
-    """旧库（单源单目的地 subscriptions）升级：重建表并拆分到 sub_sources/sub_dests。"""
+    """Old database (single-source/single-destination subscriptions) upgrade: rebuild the table and split into sub_sources/sub_dests."""
     import sqlite3
 
     path = str(tmp_path / "legacy.db")
@@ -270,4 +270,4 @@ def test_migration_splits_legacy_subscription(tmp_path):
     assert [(d["kind"], d["chat_id"]) for d in sub["dests"]] == [("dm", 1)]
     assert template_of(sub) == make_template()
     cols = {row["name"] for row in store._query("PRAGMA table_info(subscriptions)")}
-    assert "source" not in cols and "dest_chat_id" not in cols  # 旧列已移除
+    assert "source" not in cols and "dest_chat_id" not in cols  # legacy columns removed

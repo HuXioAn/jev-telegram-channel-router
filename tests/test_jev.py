@@ -1,4 +1,4 @@
-"""Jev 客户端：成功、限流重试、失败短路、并发顺序。"""
+"""Jev client: success, rate-limit retry, failure short-circuit, concurrency order."""
 from __future__ import annotations
 
 import httpx
@@ -77,7 +77,7 @@ async def test_classify_short_circuits_on_client_error():
     finally:
         await http.aclose()
     assert "error" in result and "422" in result["error"]
-    assert calls["n"] == 1  # 非限流错误不重试
+    assert calls["n"] == 1  # non-rate-limit errors are not retried
 
 
 async def test_classify_many_preserves_order_and_isolates_failures():

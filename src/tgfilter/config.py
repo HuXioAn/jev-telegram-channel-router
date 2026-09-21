@@ -1,4 +1,4 @@
-"""环境变量与全局配置。"""
+"""Environment variables and global configuration."""
 from __future__ import annotations
 
 import os
@@ -29,7 +29,7 @@ def _float(name: str, default: float) -> float:
 
 
 def _ids(name: str) -> tuple[int, ...]:
-    """逗号（或分号）分隔的 Telegram 用户 id 列表。"""
+    """Comma- (or semicolon-) separated list of Telegram user ids."""
     raw = _env(name).replace(";", ",")
     return tuple(int(part) for part in (p.strip() for p in raw.split(",")) if part.isdigit())
 
@@ -50,6 +50,7 @@ class Settings:
     fetch_page_delay: float = 0.6
     digest_chunk_limit: int = 3800
     judge_max_questions: int = 24
+    default_lang: str = "en"
     admin_user_ids: tuple[int, ...] = ()
     default_user_status: str = "active"
 
@@ -70,6 +71,7 @@ class Settings:
             http_timeout=_float("HTTP_TIMEOUT", 30.0),
             fetch_page_delay=_float("FETCH_PAGE_DELAY", 0.6),
             digest_chunk_limit=_int("DIGEST_CHUNK_LIMIT", 3800),
+            default_lang=_env("DEFAULT_LANG", "en") or "en",
             admin_user_ids=_ids("ADMIN_USER_IDS"),
             default_user_status=_env("DEFAULT_USER_STATUS", "active") or "active",
         )

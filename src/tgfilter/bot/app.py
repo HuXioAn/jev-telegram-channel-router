@@ -1,4 +1,4 @@
-"""PTB Application 构建与到期订阅调度。"""
+"""PTB Application wiring and the channel-refresh scheduler."""
 from __future__ import annotations
 
 import asyncio
@@ -12,6 +12,7 @@ from telegram.ext import (Application, ApplicationBuilder, BaseUpdateProcessor,
                           CallbackQueryHandler, ChatMemberHandler, CommandHandler,
                           ConversationHandler, MessageHandler, TypeHandler, filters)
 
+from .. import i18n
 from ..channel_fetch import ChannelFetcher
 from ..config import Settings
 from ..delivery import Sender
@@ -28,25 +29,23 @@ logger = logging.getLogger(__name__)
 TICK_SECONDS = 60
 ERROR_NOTIFY_COOLDOWN_SECONDS = 6 * 3600
 
-# 注册到 Telegram 的命令菜单（客户端输入框的 “/” 列表）
-BOT_COMMANDS = [
-    BotCommand("new", "新建订阅"),
-    BotCommand("list", "我的订阅（选条目后暂停/试跑/编辑/删除）"),
-    BotCommand("test", "试跑一次（样张发往订阅目标）"),
-    BotCommand("help", "使用说明"),
-    BotCommand("cancel", "取消当前操作"),
-    BotCommand("start", "开始使用"),
-]
+CONCURRENT_UPDATES = 12  # global parallel update cap (per chat still serial, see below)
 
-CONCURRENT_UPDATES = 12  # 全局并行更新上限（同一聊天仍严格串行，见 PerChatUpdateProcessor）
+
+def _bot_commands(lang: str, *, admin: bool = False) -> list[BotCommand]:
+    """Command menu ("/" list) for one language; optionally with /admin."""
+    commands = [BotCommand(cmd, desc) for cmd, desc in i18n.COMMANDS[lang]]
+    if admin:
+        commands.append(BotCommand("admin", i18n.ADMIN_COMMAND_DESC[lang]))
+    return commands
 
 
 class PerChatUpdateProcessor(BaseUpdateProcessor):
-    """多用户并发：不同用户互不阻塞；同一聊天内更新严格串行，保证向导状态不乱序。
+    """Multi-user concurrency: users never block each other; one chat is serial.
 
-    PTB 自带的 SimpleUpdateProcessor 只做全局信号量限流，同一聊天的多次
-    更新可能交叠执行（快速连点按钮/连发消息时向导会乱序），故在其上再加
-    一层「每聊天锁」。
+    PTB's SimpleUpdateProcessor only applies a global semaphore, so updates from
+    the same chat may overlap (rapid button taps / messages can reorder wizard
+    state). This processor adds a per-chat lock on top.
     """
 
     def __init__(self, max_concurrent_updates: int = CONCURRENT_UPDATES):
@@ -74,7 +73,7 @@ class PerChatUpdateProcessor(BaseUpdateProcessor):
         if key is None:
             await coroutine
             return
-        if len(self._locks) > 4096:  # 丢弃空闲锁，防长期运行缓慢膨胀
+        if len(self._locks) > 4096:  # drop idle locks so long runs don't grow forever
             self._locks = {k: v for k, v in self._locks.items() if v.locked()}
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
@@ -96,8 +95,11 @@ async def _execute_watch(services: Services, watch: dict, bot: Bot) -> None:
                 _last_notified[channel] = now
                 for admin_id in services.settings.admin_user_ids:
                     try:
+                        lang = services.store.language_for(
+                            admin_id, services.settings.default_lang)
                         await bot.send_message(
-                            admin_id, f"⚠️ 频道 @{channel} 刷新出错：{result.error}")
+                            admin_id, i18n.t(lang, "watch_error",
+                                             channel=channel, err=result.error))
                     except TelegramError:
                         pass
     except Exception:
@@ -107,7 +109,7 @@ async def _execute_watch(services: Services, watch: dict, bot: Bot) -> None:
 
 
 async def _tick(context) -> None:
-    """每分钟扫一次到期的源频道；每个频道独立任务并发执行。"""
+    """Scan for due source channels once a minute; each runs as its own task."""
     services: Services = context.application.bot_data["services"]
     store = services.store
     store.sync_watches(services.settings.default_interval_minutes)
@@ -130,21 +132,27 @@ def build_application(settings: Settings) -> Application:
         compiler = TemplateCompiler(http, settings) if settings.llm_enabled else None
         pipeline = Pipeline(store, fetcher, jev, Sender(app.bot),
                             settings.digest_chunk_limit,
-                            settings.judge_max_questions)
+                            settings.judge_max_questions,
+                            settings.default_lang)
         app.bot_data["services"] = Services(settings, store, fetcher, jev, compiler, pipeline)
         app.bot_data["http"] = http
+        # Command menu: English is the default; Chinese is served for zh clients.
         try:
-            await app.bot.set_my_commands(BOT_COMMANDS)
+            await app.bot.set_my_commands(_bot_commands("en"))
+            await app.bot.set_my_commands(_bot_commands("zh"), language_code="zh")
         except TelegramError:
-            logger.warning("set_my_commands 失败（命令菜单未注册）", exc_info=True)
-        # 管理员专属菜单：/admin 只出现在管理员自己的客户端里
+            logger.warning("set_my_commands failed (command menu not registered)", exc_info=True)
+        # Admin-only menu: /admin shows up only in the admins' own clients.
         for admin_id in settings.admin_user_ids:
-            try:
-                await app.bot.set_my_commands(
-                    BOT_COMMANDS + [BotCommand("admin", "管理员面板")],
-                    scope=BotCommandScopeChat(chat_id=admin_id))
-            except TelegramError:
-                logger.warning("set_my_commands(admin=%s) 失败", admin_id, exc_info=True)
+            for code in (None, "zh"):
+                try:
+                    await app.bot.set_my_commands(
+                        _bot_commands(code or "en", admin=True),
+                        scope=BotCommandScopeChat(chat_id=admin_id),
+                        language_code=code)
+                except TelegramError:
+                    logger.warning("set_my_commands(admin=%s, lang=%s) failed",
+                                   admin_id, code, exc_info=True)
         app.job_queue.run_repeating(_tick, interval=TICK_SECONDS, first=10,
                                     name="due-watches")
 
@@ -183,17 +191,21 @@ def build_application(settings: Settings) -> Application:
     app.add_handler(CommandHandler("help", h.cmd_help))
     app.add_handler(CommandHandler("list", h.cmd_list))
     app.add_handler(CommandHandler("test", h.cmd_test))
+    app.add_handler(CommandHandler("lang", h.cmd_lang))
     app.add_handler(CommandHandler("admin", admin_handlers.cmd_admin))
     app.add_handler(CallbackQueryHandler(h.on_ui, pattern=r"^ui:(list|help)$"))
+    app.add_handler(CallbackQueryHandler(h.on_lang, pattern=r"^lang:set:"))
     app.add_handler(CallbackQueryHandler(h.on_sub_action, pattern=r"^sub:"))
-    # 订阅编辑（管理器/模板；会话进行中时由会话内同名处理器先行接管）
+    # Subscription editing (managers/template; during a conversation the same-named
+    # in-conversation handlers take over first)
     app.add_handler(CallbackQueryHandler(h.on_src_manager, pattern=r"^ms:"))
     app.add_handler(CallbackQueryHandler(h.on_dest_manager, pattern=r"^md:"))
     app.add_handler(ChatMemberHandler(h.on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
-    # 私聊兜底：未识别的文本/未知命令 → 固定提示（必须排在全部业务处理器之后）
+    # Private-chat fallback: unrecognized text / unknown commands → fixed hint
+    # (must come after every business handler)
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & (filters.TEXT | filters.COMMAND), h.on_plain_text))
-    # 独立分组：每条更新记一行日志，用于排查「消息到底有没有到」
+    # Separate group: log one line per update, for "did the message arrive" debugging
     app.add_handler(TypeHandler(Update, h.log_update), group=1)
     app.add_error_handler(h.on_error)
     return app

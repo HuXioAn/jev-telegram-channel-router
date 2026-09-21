@@ -1,4 +1,4 @@
-"""服务容器：在 Application.post_init 组装一次，挂在 bot_data['services']。"""
+"""Service container: assembled once in Application.post_init, attached to bot_data['services']."""
 from __future__ import annotations
 
 from dataclasses import dataclass

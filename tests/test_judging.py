@@ -1,4 +1,4 @@
-"""联合判定引擎：指纹、问题并集（去重/分片）、缓存与投影。"""
+"""Union judging engine: fingerprint, question union (dedup/sharding), cache and projection."""
 from __future__ import annotations
 
 from conftest import make_template
@@ -10,7 +10,7 @@ CHINA = "是否与中国相关？"
 
 
 def multi_template(n: int, *, prefix: str = "q") -> Template:
-    """构造含 n 个问题的模板（问题 i 的 instructions 各不相同）。"""
+    """Build a template with n questions (question i has its own instructions)."""
     questions = {f"{prefix}{i}": {"type": "noul", "title": f"{prefix}{i}",
                                   "instructions": f"问题 {prefix}{i}？"}
                  for i in range(n)}
@@ -23,7 +23,7 @@ def multi_template(n: int, *, prefix: str = "q") -> Template:
 
 
 class EchoJev:
-    """对每个 asked 问题回同一个分数；可指定整体失败的消息。"""
+    """Returns the same score for every asked question; messages can be forced to fail wholesale."""
 
     def __init__(self, score: float = 0.9, fail_texts: set[str] | None = None):
         self.score = score
@@ -39,9 +39,9 @@ class EchoJev:
                 "usage": {"input_tokens": 10, "output_tokens": 2}}
 
 
-# ------------------------------------------------------------------ 指纹
+# ------------------------------------------------------------------ fingerprint
 def test_template_fingerprint_tracks_questions_only():
-    """指纹只取决于发给 Jev 的问题集：改阈值（命中规则）不变；改问题描述则变。"""
+    """The fingerprint depends only on the question set sent to Jev: changing thresholds (match rules) leaves it unchanged; changing a question description changes it."""
     base = make_template()
     other_threshold = make_template(
         match={"logic": "all",
@@ -54,9 +54,9 @@ def test_template_fingerprint_tracks_questions_only():
     assert template_fingerprint(base) != template_fingerprint(other_question)
 
 
-# ------------------------------------------------------------------ 编排
+# ------------------------------------------------------------------ orchestration
 def test_build_groups_dedupes_identical_questions():
-    """问题 payload 相同（跨模板）→ 并集里只问一次，映射分别指回各模板。"""
+    """Identical question payloads (across templates) -> asked only once in the union, with the mapping pointing back into each template."""
     tpl_a = make_template()
     tpl_b = make_template(match={"logic": "all",
                                  "conditions": [{"question": "china",
@@ -73,7 +73,7 @@ def test_build_groups_dedupes_identical_questions():
 
 
 def test_build_groups_splits_over_cap():
-    """超过单次问题上限：按模板分片（单个模板超限时独占一片）。"""
+    """Over the per-call question cap: shard by template (a single over-limit template gets a shard of its own)."""
     tpl_big = multi_template(3, prefix="a")
     tpl_small = multi_template(1, prefix="b")
     groups = build_groups({template_fingerprint(tpl_big): tpl_big,
@@ -95,7 +95,7 @@ def test_project_maps_answers_back_to_local_questions():
     assert projected == {fp: {"china": answer}}
 
 
-# ------------------------------------------------------------------ 引擎
+# ------------------------------------------------------------------ engine
 async def test_judge_engine_caches_and_counts(tmp_path):
     store = Store(str(tmp_path / "t.db"))
     jev = EchoJev()
@@ -115,7 +115,7 @@ async def test_judge_engine_caches_and_counts(tmp_path):
     calls_before = list(jev.calls)
     cache2, stats2 = await engine.ensure("chan", posts, {fp: tpl})
     assert stats2.cached == 2 and stats2.fresh == 0
-    assert jev.calls == calls_before                     # 缓存命中 → 不再调用
+    assert jev.calls == calls_before                     # cache hit → no further call
     assert set(cache2) == {1, 2}
 
 
@@ -128,7 +128,7 @@ async def test_judge_engine_partial_failure_not_cached(tmp_path):
     cache, stats = await engine.ensure("chan", posts, {template_fingerprint(tpl): tpl})
 
     assert stats.failed == 1 and stats.calls == 2
-    assert set(cache) == {2}                             # 失败的消息不落缓存
+    assert set(cache) == {2}                             # failed messages are not cached
     assert store.judgments_for("chan", [1]) == {}
 
 
@@ -142,8 +142,8 @@ async def test_judge_engine_splits_over_cap(tmp_path):
     cache, stats = await engine.ensure("chan", [Post(id=1, text="x", url="u")],
                                        {fp_a: tpl_a, fp_b: tpl_b})
 
-    assert stats.calls == 2                              # 2+2 问 > 3 → 分两片
+    assert stats.calls == 2                              # 2+2 questions > 3 → two shards
     assert jev.calls == [("x", 2), ("x", 2)]
-    assert set(cache[1]) == {fp_a, fp_b}                 # 结果合并到同一条消息
+    assert set(cache[1]) == {fp_a, fp_b}                 # results merged onto the same message
     assert cache[1][fp_a] == {"a0": {"type": "noul", "noul": 0.9},
                               "a1": {"type": "noul", "noul": 0.9}}

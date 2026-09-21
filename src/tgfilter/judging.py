@@ -1,10 +1,10 @@
-"""频道级联合判定：把多个模板的问题并成一次调用，答案按模板投影后缓存。
+"""Channel-level union judging: merges the questions of several templates into one call, then projects and caches the answers per template.
 
-设计要点（见 PLAN §12）：
-- 同一条消息对 Jev 只调用一次（问题集 = 该频道全部活跃模板的问题并集）；
-- 问题级去重：payload 完全相同的提问（跨模板）只问一次；
-- 超过单次调用的问题上限时按模板分片（仍远少于「每模板一次」）；
-- 结果按模板投影后写入 judgments 缓存，多订阅/重跑天然幂等。
+Design notes (see PLAN §12):
+- the same message is sent to Jev only once (question set = union of the questions of all active templates on that channel);
+- question-level dedup: identical question payloads (across templates) are asked only once;
+- when the per-call question limit is exceeded, shard by template (still far fewer calls than "one call per template");
+- results are projected per template and written into the judgments cache, so multiple subscriptions / reruns are naturally idempotent.
 """
 from __future__ import annotations
 
@@ -30,27 +30,27 @@ def _ask_id(payload: dict) -> str:
 
 
 def template_fingerprint(template: Template) -> str:
-    """模板判定指纹：只取实际发给 Jev 的问题集（改名称/命中规则不影响缓存）。"""
+    """Template judgment fingerprint: only the question set actually sent to Jev (renaming or changing match rules does not affect the cache)."""
     return "t" + hashlib.sha1(_canon(template.jev_questions()).encode()).hexdigest()[:11]
 
 
 @dataclass
 class UnionGroup:
-    """一次 Jev 调用覆盖的问题集合及其到各模板本地问题的映射。"""
-    asked: dict[str, dict]              # asked_id -> 提问 payload
-    mapping: dict[str, dict[str, str]]  # fp -> {本地 qid: asked_id}
+    """The set of questions covered by one Jev call, plus their mapping onto each template's local questions."""
+    asked: dict[str, dict]              # asked_id -> question payload
+    mapping: dict[str, dict[str, str]]  # fp -> {local qid: asked_id}
 
     def project(self, answers: dict) -> dict[str, dict[str, Any]]:
-        """asked 答案 → {fp: {本地 qid: 答案}}。"""
+        """asked answers -> {fp: {local qid: answer}}."""
         return {fp: {qid: answers.get(aid) for qid, aid in qmap.items()}
                 for fp, qmap in self.mapping.items()}
 
 
 def build_groups(templates: dict[str, Template],
                  max_questions: int = DEFAULT_MAX_QUESTIONS) -> list[UnionGroup]:
-    """把 {fp: 模板} 编排成若干次调用；payload 相同的问题同组内只问一次。
+    """Arrange {fp: template} into a number of calls; identical question payloads are asked only once per group.
 
-    分片仅在超限时发生（罕见），此时同一提问可能出现在两个分片中。
+    Sharding only happens when the limit is exceeded (rare); in that case the same question may appear in two shards.
     """
     groups: list[UnionGroup] = []
     asked: dict[str, dict] = {}
@@ -87,7 +87,7 @@ class _PostJudgment:
 
 async def judge_post(jev: JevClient, text: str,
                      groups: list[UnionGroup]) -> _PostJudgment:
-    """按并集分组判定一条消息；分片失败不拖垮其余分片。"""
+    """Judge one message per union group; a failing shard does not drag down the remaining shards."""
     out = _PostJudgment()
     for group in groups:
         out.calls += 1
@@ -105,16 +105,16 @@ async def judge_post(jev: JevClient, text: str,
 
 @dataclass
 class EnsureStats:
-    fresh: int = 0        # 本次新判定的消息数
-    cached: int = 0       # 直接命中缓存的消息数
-    calls: int = 0        # 实际发起的 Jev 调用数
-    failed: int = 0       # 全部调用失败、无法缓存的消息数
+    fresh: int = 0        # messages newly judged in this round
+    cached: int = 0       # messages served straight from the cache
+    calls: int = 0        # actual Jev calls made
+    failed: int = 0       # messages whose calls all failed and could not be cached
     input_tokens: int = 0
     output_tokens: int = 0
 
 
 class JudgeEngine:
-    """缓存优先的联合判定入口：缺失的消息用问题并集判一次，投影后落库。"""
+    """Cache-first union judging entry point: messages that are missing are judged once with the union question set, then projected and stored."""
 
     def __init__(self, store: Store, jev: JevClient,
                  max_questions: int = DEFAULT_MAX_QUESTIONS):
@@ -124,7 +124,7 @@ class JudgeEngine:
 
     async def ensure(self, channel: str, posts: list[Post],
                      templates: dict[str, Template]) -> tuple[dict[int, dict], EnsureStats]:
-        """保证 posts 均有判定缓存；返回（{post_id: payload}，统计）。"""
+        """Ensure every post has a cached judgment; returns ({post_id: payload}, stats)."""
         stats = EnsureStats()
         cache = self._store.judgments_for(channel, [p.id for p in posts])
         fresh = [p for p in posts if p.id not in cache]

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""影子对照：同一批真实消息，「每模板分别判定」vs「联合判定」的一致性与用
+"""Shadow comparison: for the same batch of real messages, "per-template judging" vs "union judging" in terms of consistency and usage.
 
-对比项：
-- 命中判定逐（消息 × 模板）一致性（目标 100%）
-- Jev 调用次数与真实 token 用量（联合判定应显著更省）
+Comparison items:
+- per (message × template) hit consistency (target 100%)
+- number of Jev calls and real token usage (union judging should be markedly cheaper)
 
-用法：
-    python scripts/shadow_union.py [频道名] [条数]     # 默认 Financial_Express 12
+Usage:
+    python scripts/shadow_union.py [channel] [count]     # defaults to Financial_Express 12
 
-TYPESAFE_API_KEY 从环境变量或 .env 读取；未配置时直接退出。
+TYPESAFE_API_KEY is read from the environment or .env; without it the script exits immediately.
 """
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ def _tpl(name: str, qid: str, question: dict, threshold: float = 0.7) -> Templat
     })
 
 
-# 模拟一个频道上并存的多个订阅模板（中国问题在多个模板间共享以验证问题级去重）
+# Simulate several subscription templates coexisting on one channel (the China question is shared across templates to verify question-level dedup)
 TEMPLATES = [
     _tpl("中国财经", "china", CHINA_Q),
     _tpl("加密货币", "crypto", CRYPTO_Q),
@@ -75,7 +75,7 @@ async def main() -> None:
         jev = JevClient(http, settings.typesafe_api_key,
                         settings.typesafe_base_url, concurrency=8)
 
-        # ---- 分开判（旧行为）：每条消息 × 每模板一次调用
+        # ---- separate judging (legacy behavior): one call per message × template
         legacy: dict[tuple[int, str], bool] = {}
         legacy_in = legacy_out = 0
         legacy_calls = 0
@@ -90,7 +90,7 @@ async def main() -> None:
                     continue
                 legacy[(post.id, tpl.name)] = bool(tpl.evaluate(result["answers"]))
 
-        # ---- 联合判：所有模板问题并集，一条消息一次调用
+        # ---- union judging: union of all template questions, one call per message
         fps = {template_fingerprint(tpl): tpl for tpl in TEMPLATES}
         groups = build_groups(fps)
         union: dict[tuple[int, str], bool] = {}
@@ -109,7 +109,7 @@ async def main() -> None:
                 if answers is not None:
                     union[(post.id, tpl.name)] = bool(tpl.evaluate(answers))
 
-        # ---- 对照
+        # ---- comparison
         total = agree = 0
         mismatches: list[str] = []
         for key, legacy_hit in sorted(legacy.items()):

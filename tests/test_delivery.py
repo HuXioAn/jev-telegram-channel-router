@@ -1,4 +1,4 @@
-"""投递层：限流重试与错误映射。"""
+"""Delivery layer: rate-limit retries and error mapping."""
 from __future__ import annotations
 
 from datetime import timedelta

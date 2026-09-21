@@ -1,4 +1,4 @@
-"""SQLite 存储层：users / chats / subscriptions / watches / judgments / logs。"""
+"""SQLite storage layer: users / chats / subscriptions / watches / judgments / logs."""
 from __future__ import annotations
 
 import json
@@ -7,6 +7,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from . import i18n
 from .models import Template
 
 _SCHEMA = """
@@ -17,6 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
     max_subs INTEGER,
     quota_jev_monthly INTEGER,
     note TEXT,
+    lang TEXT,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS chats (
@@ -84,6 +86,10 @@ CREATE TABLE IF NOT EXISTS usage (
     detail TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_usage_user_ts ON usage(user_id, ts);
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 """
 
 
@@ -92,7 +98,7 @@ def _now() -> str:
 
 
 def month_start(now: datetime | None = None) -> datetime:
-    """当月起点（UTC），按月统计配额用。"""
+    """Start of the current month (UTC), used for monthly quota accounting."""
     moment = now or datetime.now(timezone.utc)
     return moment.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
@@ -108,7 +114,7 @@ def _parse_ts(value: str | None) -> datetime | None:
 
 
 def template_of(row: dict) -> Template:
-    """把订阅行里的 template_json 解析为 Template。"""
+    """Parse template_json from a subscription row into a Template."""
     return Template.model_validate_json(row["template_json"])
 
 
@@ -123,17 +129,18 @@ class Store:
             self._conn.executescript(_SCHEMA)
             self._migrate()
             self._conn.commit()
-        # 旧库/新库统一：把 enabled 订阅的源频道物化进 watches（幂等，仅补新增）
+        # Uniform for old and new databases: materialize the source channels of enabled subscriptions into watches (idempotent, only adds new ones)
         self.sync_watches(20)
 
     def _migrate(self) -> None:
-        """旧库平滑升级：补齐后续新增的列。"""
+        """Smooth upgrade of old databases: backfill columns added later."""
         additions = {
             "users": {
                 "status": "TEXT NOT NULL DEFAULT 'active'",
                 "max_subs": "INTEGER",
                 "quota_jev_monthly": "INTEGER",
                 "note": "TEXT",
+                "lang": "TEXT",
             },
             "usage": {
                 "input_tokens": "INTEGER NOT NULL DEFAULT 0",
@@ -146,7 +153,7 @@ class Store:
             for name, ddl in columns.items():
                 if name not in cols:
                     self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
-        # 单源单目的地 → n:n：旧 subscriptions 重建，数据拆入 sub_sources / sub_dests
+        # single source, single destination -> n:n: rebuild the old subscriptions, splitting data into sub_sources / sub_dests
         sub_cols = {row["name"] for row in
                     self._conn.execute("PRAGMA table_info(subscriptions)")}
         if "source" in sub_cols:
@@ -200,6 +207,34 @@ class Store:
             result[row["status"]] = result.get(row["status"], 0) + row["n"]
         return result
 
+    # --------------------------------------------------- settings & language
+    def get_setting(self, key: str, default: str | None = None) -> str | None:
+        rows = self._query("SELECT value FROM settings WHERE key=?", (key,))
+        return rows[0]["value"] if rows else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        self._run("INSERT INTO settings(key, value) VALUES(?,?) "
+                  "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+
+    def set_user_lang(self, user_id: int, lang: str) -> None:
+        # Upsert: a user may pick a language before any explicit add_user call.
+        self._run(
+            "INSERT INTO users(id, lang, created_at) VALUES(?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET lang=excluded.lang",
+            (user_id, lang, _now()))
+
+    def language_for(self, user_id: int, default: str = "en") -> str:
+        """Resolve a user's UI language: personal choice → instance default.
+
+        The instance default comes from the settings table (set via /admin lang)
+        and falls back to the configured default. Codes are normalized so that
+        e.g. "zh-hans" resolves to "zh"; anything unknown resolves to English.
+        """
+        rows = self._query("SELECT lang FROM users WHERE id=?", (user_id,))
+        if rows and rows[0]["lang"]:
+            return i18n.resolve(rows[0]["lang"])
+        return i18n.resolve(self.get_setting("default_lang") or default)
+
     # ------------------------------------------------------------- chats
     def upsert_chat(self, chat_id: int, kind: str, title: str, added_by: int | None) -> None:
         self._run(
@@ -219,7 +254,7 @@ class Store:
         rows = self._query("SELECT * FROM chats WHERE chat_id=?", (chat_id,))
         return rows[0] if rows else None
 
-    # ------------------------------------------------------ 统计 / 用量
+    # ------------------------------------------------------ stats / usage
     def count_subscriptions(self) -> dict[str, int]:
         rows = self._query(
             "SELECT COUNT(*) AS n, COALESCE(SUM(enabled),0) AS e FROM subscriptions")
@@ -234,7 +269,7 @@ class Store:
     def record_usage(self, user_id: int, kind: str, qty: int = 1,
                      sub_id: int | None = None, detail: str = "",
                      input_tokens: int = 0, output_tokens: int = 0) -> None:
-        """记录一条用量：kind ∈ jev/llm/run/fetch/deliver；token 用量为 API 真实值。"""
+        """Record one usage entry: kind ∈ jev/llm/run/fetch/deliver; token counts are the real API values."""
         self._run(
             "INSERT INTO usage(ts, user_id, sub_id, kind, qty, input_tokens, output_tokens, detail) "
             "VALUES(?,?,?,?,?,?,?,?)",
@@ -259,7 +294,7 @@ class Store:
 
     def usage_rollup(self, user_id: int | None = None,
                      since: datetime | None = None) -> dict[str, dict[str, int]]:
-        """按 kind 汇总：{"jev": {"count": n, "in": tokens, "out": tokens}, ...}。"""
+        """Roll up by kind: {"jev": {"count": n, "in": tokens, "out": tokens}, ...}."""
         sql, args = ("SELECT kind, COALESCE(SUM(qty),0) AS s, "
                      "COALESCE(SUM(input_tokens),0) AS tin, "
                      "COALESCE(SUM(output_tokens),0) AS tout "
@@ -281,7 +316,7 @@ class Store:
                 for kind, item in self.usage_rollup(user_id, since).items()}
 
     def usage_rows(self, since: datetime | None = None) -> list[dict]:
-        """按 (user_id, kind) 汇总（含 token），供管理员视图聚合。"""
+        """Roll up by (user_id, kind) (tokens included), for the admin view to aggregate."""
         sql, args = ("SELECT user_id, kind, COALESCE(SUM(qty),0) AS s, "
                      "COALESCE(SUM(input_tokens),0) AS tin, "
                      "COALESCE(SUM(output_tokens),0) AS tout "
@@ -311,7 +346,7 @@ class Store:
                          dest_kind: str | None = None,
                          dest_chat_id: int | None = None,
                          dest_title: str | None = None) -> int:
-        """新建订阅（n 源 → m 目的地）。旧单源/单目的地签名自动转成单元素列表。"""
+        """Create a subscription (n sources -> m destinations). The legacy single-source/single-destination signature is automatically turned into single-element lists."""
         if source is not None:
             sources = [{"source": source, "last_seen_id": last_seen_id}]
         if dest_kind is not None and dest_chat_id is not None:
@@ -374,7 +409,7 @@ class Store:
         return sub
 
     def mark_source_run(self, source_id: int, last_seen_id: int | None) -> None:
-        """推进单个源频道的抓取游标（各源独立）。"""
+        """Advance the fetch cursor of a single source channel (each source is independent)."""
         self._run("UPDATE sub_sources SET last_seen_id=? WHERE id=?",
                   (last_seen_id, source_id))
 
@@ -392,12 +427,12 @@ class Store:
         self._run("DELETE FROM sub_dests WHERE sub_id=?", (sub_id,))
         self._run("DELETE FROM subscriptions WHERE id=?", (sub_id,))
 
-    # ----------------------------------------------- watches（频道级调度）
+    # ----------------------------------------------- watches (channel-level scheduling)
     def sync_watches(self, default_interval: int) -> None:
-        """物化：watches = enabled 订阅源频道并集（幂等）。
+        """Materialize: watches = union of the source channels of enabled subscriptions (idempotent).
 
-        - 新频道：游标取该频道所有订阅游标的最小值（不丢消息）；间隔取订阅间隔最小值。
-        - 已有频道：只保留（间隔可被管理员改写，不覆盖）；无 enabled 观察者则退役删除。
+        - New channel: the cursor is the minimum cursor over all of that channel's subscriptions (no lost messages); the interval is the minimum subscription interval.
+        - Existing channel: kept as is (the interval may have been overridden by an admin and is not overwritten); retired and deleted when it has no enabled watchers.
         """
         rows = self._query(
             "SELECT s.source AS channel, MIN(s.last_seen_id) AS cursor,"
@@ -418,7 +453,7 @@ class Store:
             self._run("DELETE FROM watches WHERE channel=?", (channel,))
 
     def due_watches(self, now: datetime) -> list[dict]:
-        """到期（从未抓过，或距上次抓取超过间隔）的频道。"""
+        """Channels that are due (never fetched, or last fetched longer ago than the interval)."""
         due = []
         for row in self._query("SELECT * FROM watches"):
             last = _parse_ts(row["last_fetch_at"])
@@ -439,7 +474,7 @@ class Store:
 
     def mark_watch_fetched(self, channel: str, last_seen_id: int | None = None,
                            when: str | None = None) -> None:
-        """记录频道抓取时间；可选推进抓取游标（在路由完成之后调用）。"""
+        """Record the channel fetch time; optionally advance the fetch cursor (called after routing completes)."""
         if last_seen_id is None:
             self._run("UPDATE watches SET last_fetch_at=? WHERE channel=?",
                       (when or _now(), channel))
@@ -449,14 +484,14 @@ class Store:
                 (last_seen_id, when or _now(), channel))
 
     def watchers_of(self, channel: str) -> list[dict]:
-        """观察某频道的 enabled 订阅（含源/目的地）。"""
+        """The enabled subscriptions watching a given channel (with source/destination)."""
         rows = self._query(
             "SELECT DISTINCT sub.* FROM subscriptions sub"
             " JOIN sub_sources s ON s.sub_id = sub.id"
             " WHERE sub.enabled=1 AND s.source=? ORDER BY sub.id", (channel,))
         return [self._with_children(row) for row in rows]
 
-    # --------------------------------------------- judgments（频道级判定缓存）
+    # --------------------------------------------- judgments (channel-level judgment cache)
     def save_judgment(self, channel: str, post_id: int, payload: dict) -> None:
         self._run(
             "INSERT OR REPLACE INTO judgments(channel, post_id, payload, ts)"
@@ -464,7 +499,7 @@ class Store:
             (channel, int(post_id), json.dumps(payload, ensure_ascii=False), _now()))
 
     def judgments_for(self, channel: str, post_ids: list[int]) -> dict[int, dict]:
-        """批量取判定结果：{post_id: {模板指纹: {本地问题: 答案}}}；缺失的不在返回中。"""
+        """Fetch judgment results in bulk: {post_id: {template fingerprint: {local question: answer}}}; missing entries are absent from the result."""
         if not post_ids:
             return {}
         marks = ",".join("?" * len(post_ids))
@@ -480,7 +515,7 @@ class Store:
         return result
 
     def prune_judgments(self, days: int = 7) -> int:
-        """清理过期判定缓存；返回删除行数。"""
+        """Prune expired judgment cache entries; returns the number of deleted rows."""
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         cursor = self._run("DELETE FROM judgments WHERE ts < ?", (cutoff,))
         return int(cursor.rowcount or 0)

@@ -1,12 +1,12 @@
-"""模板编译器：自然语言描述 → Jev 模板（单轮 LLM 调用，结构化 JSON 输出）。
+"""Template compiler: natural-language description -> Jev template (single-turn LLM call, structured JSON output).
 
-设计要求（见 PLAN.md §8）：无 agent loop；校验失败仅自动修复重试一次；
-兼容任意 OpenAI 兼容端点（不支持 JSON mode 的端点自动降级）。
+Design requirements (see PLAN.md §8): no agent loop; a failed validation triggers only one automatic repair retry;
+compatible with any OpenAI-compatible endpoint (endpoints without JSON mode support degrade automatically).
 
-提示词中的 Jev 知识提炼自官方文档（docs.typesafe.ai，2026-09 审阅）：
-primitives / noul / choice / score / advanced(structure) / state 各页。
-要点：英文为主训练语言；问题并行独立、单点判断；noul 是概率不是程度；
-score 等级需描述具体情形且逐条独立评估；criteria 支持结构化对象。
+The Jev knowledge in the prompt is distilled from the official docs (docs.typesafe.ai, reviewed 2026-09):
+the primitives / noul / choice / score / advanced(structure) / state pages.
+Key points: English is the main training language; questions are independent and judged at a single point; noul is a probability, not a degree;
+score levels must describe concrete situations and be evaluated independently; criteria supports structured objects.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$")
 class LLMError(Exception):
     def __init__(self, message: str, usage: dict | None = None):
         super().__init__(message)
-        self.usage: dict = usage or {}  # 失败前已产生的真实 token 用量
+        self.usage: dict = usage or {}  # real token usage generated before the failure
 
 
 _PROMPT_HEAD = """You are the Filter Template Compiler. You convert a user's plain-language description of what they want to catch from Telegram channels into ONE strict JSON document: a reusable "Jev template" that a judgment model (Jev, by TypeSafe) executes against every incoming message.
@@ -174,10 +174,10 @@ class TemplateCompiler:
 
     async def compile(self, description: str, feedback: str | None = None,
                       previous: Template | None = None) -> tuple[Template, dict]:
-        """描述（可带调整意见与上一版模板）→ (Template, usage)。
+        """Description (optionally with adjustment feedback and the previous template) -> (Template, usage).
 
-        usage = {"input_tokens", "output_tokens", "calls"}，为 API 返回的真实
-        用量（含自动修复重试的累计）；失败抛 LLMError（同样带 .usage）。
+        usage = {"input_tokens", "output_tokens", "calls"} holds the real usage
+        returned by the API (accumulated across automatic repair retries); on failure raises LLMError (which also carries .usage).
         """
         user_parts = [f"User description: {description.strip()}"]
         if previous is not None and feedback:
@@ -190,7 +190,7 @@ class TemplateCompiler:
 
         last_error: str | None = None
         totals = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
-        for _ in range(2):  # 原始尝试 + 一次修复重试
+        for _ in range(2):  # original attempt + one repair retry
             attempt_messages = list(messages)
             if last_error:
                 attempt_messages.append({
@@ -212,10 +212,10 @@ class TemplateCompiler:
     async def _chat(self, messages: list[dict]) -> tuple[str, dict]:
         headers = {"Authorization": f"Bearer {self._api_key}"}
         base: dict = {"model": self._model, "messages": messages}
-        # 逐级降级以适配各家 OpenAI 兼容端点：
-        #   ① json_mode + temperature=0（输出最稳）
-        #   ② 去掉 response_format（端点不支持 JSON mode）
-        #   ③ 再去掉 temperature（部分推理模型只接受默认温度）
+        # Graceful degradation to fit the various OpenAI-compatible endpoints:
+        #   1) json_mode + temperature=0 (most stable output)
+        #   2) drop response_format (endpoint does not support JSON mode)
+        #   3) drop temperature as well (some reasoning models only accept the default temperature)
         variants: list[dict] = [
             {**base, "temperature": 0, "response_format": {"type": "json_object"}},
             {**base, "temperature": 0},

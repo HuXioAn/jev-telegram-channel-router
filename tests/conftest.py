@@ -1,4 +1,4 @@
-"""测试共用的夹具与工具。"""
+"""Shared fixtures and helpers for the test suite."""
 from __future__ import annotations
 
 import sys
@@ -9,13 +9,13 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-# 供各测试直接 import 的构造器
+# Constructors re-exported for direct import from tests
 from tgfilter.models import Template  # noqa: E402
 
 
 def make_page(channel: str, ids: list[int], title: str = "测试频道",
               text: str | None = None) -> str:
-    """生成与 t.me/s/ 结构一致的最小预览 HTML。"""
+    """Build minimal preview HTML matching the t.me/s/ structure."""
     blocks = []
     for mid in ids:
         body = text if text is not None else f"第 {mid} 条<br/>内容 &amp; 更多"

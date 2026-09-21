@@ -1,4 +1,4 @@
-"""管理员命令单测：权限、总览、用户详情、封禁/恢复、配额。"""
+"""Admin command unit tests: permissions, overview, user details, block/unblock, quota."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -25,7 +25,7 @@ class FakeBot:
 
 def _make(tmp_path, admin_ids=(ADMIN_ID,)):
     store = Store(str(tmp_path / "t.db"))
-    settings = Settings(admin_user_ids=admin_ids)
+    settings = Settings(admin_user_ids=admin_ids, default_lang="zh")
     svc = SimpleNamespace(store=store, settings=settings)
     bot = FakeBot()
     context = SimpleNamespace(
@@ -101,7 +101,7 @@ async def test_admin_quota_and_user_detail(tmp_path):
 
 
 async def test_admin_watches_and_watch_interval(tmp_path):
-    """频道调度管理：查看刷新列表、调整某频道间隔。"""
+    """Channel scheduling admin: view the refresh list, adjust one channel's interval."""
     store, _, context = _make(tmp_path)
     store.add_subscription(user_id=USER_ID, source="chan", template=make_template(),
                            dest_kind="dm", dest_chat_id=USER_ID, dest_title="私聊",
@@ -125,6 +125,19 @@ async def test_admin_bad_args_reports_help(tmp_path):
 
 
 async def test_admin_disabled_without_admin_ids(tmp_path):
-    """未配置 ADMIN_USER_IDS 时管理员命令对任何人都不生效。"""
+    """Admin commands are inert for everyone when ADMIN_USER_IDS is not configured."""
     _, _, context = _make(tmp_path, admin_ids=())
     assert "未知命令" in await _run(context, ADMIN_ID, [])
+
+
+async def test_admin_lang_sets_default(tmp_path):
+    """`/admin lang` switches the instance default language and shows it in the overview."""
+    store, _, context = _make(tmp_path)
+    store.set_user_lang(ADMIN_ID, "zh")   # pin the admin's own language
+    text = await _run(context, ADMIN_ID, [])
+    assert "默认语言" in text
+    text = await _run(context, ADMIN_ID, ["lang", "en"])
+    assert "默认语言" in text and "English" in text
+    assert store.get_setting("default_lang") == "en"
+    text = await _run(context, ADMIN_ID, ["lang", "nope"])
+    assert "用法" in text

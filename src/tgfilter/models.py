@@ -1,4 +1,4 @@
-"""领域模型：Post、Jev 模板（Question / Condition / Template）与规则求值。"""
+"""Domain models: Post, Jev template (Question / Condition / Template) and rule evaluation."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class Post(BaseModel):
-    """频道里的一条帖子。"""
+    """A single post in a channel."""
 
     id: int
     date: datetime | None = None
@@ -16,32 +16,32 @@ class Post(BaseModel):
     url: str = ""
 
 
-# criteria 的元素：字符串或结构化对象/数组（对齐 Jev 的 EntryType，见官方 Advanced 文档）。
-# 结构化形式（如 {"what": ..., "examples": [...]}）能更精确地划定选项/等级边界。
+# Elements of criteria: a string or a structured object/array (mirrors Jev's EntryType, see the official Advanced docs).
+# The structured form (e.g. {"what": ..., "examples": [...]}) pins down option/level boundaries more precisely.
 Entry = str | dict[str, Any] | list[Any] | None
 
 
 class _QuestionBase(BaseModel):
-    title: str = ""  # 展示用短标签（不发给 Jev）
+    title: str = ""  # short label for display (not sent to Jev)
     instructions: str | dict | list
 
 
 class NoulQuestion(_QuestionBase):
-    """是/否问题，Jev 返回 0~1 概率。"""
+    """Yes/no question; Jev returns a probability between 0 and 1."""
 
     type: Literal["noul"] = "noul"
     criteria: dict[str, Entry] | None = None
 
 
 class ChoiceQuestion(_QuestionBase):
-    """从互斥选项中选择。"""
+    """Choose among mutually exclusive options."""
 
     type: Literal["choice"] = "choice"
     criteria: dict[str, Entry]
 
 
 class ScoreQuestion(_QuestionBase):
-    """沿有序等级评分，返回 0 起始的加权位置。"""
+    """Score along an ordered scale; returns a weighted position starting at 0."""
 
     type: Literal["score"] = "score"
     criteria: list[Entry] = Field(min_length=2, max_length=10)
@@ -53,7 +53,7 @@ Question = Annotated[
 
 
 class Condition(BaseModel):
-    """一条命中判定：question 的答案（数值/字符串）与 value 比较。"""
+    """A single match check: the answer to question (numeric/string) compared against value."""
 
     question: str
     op: Literal[">=", "<=", "==", "in", "not_in"] = ">="
@@ -66,7 +66,7 @@ class MatchSpec(BaseModel):
 
 
 class Template(BaseModel):
-    """完整的筛选模板：问题集 + 命中规则。可反复使用。"""
+    """A complete filtering template: question set + match rules. Reusable."""
 
     name: str = ""
     questions: dict[str, Question]
@@ -82,14 +82,14 @@ class Template(BaseModel):
         return self
 
     def jev_questions(self) -> dict[str, dict]:
-        """转成 TypeSafe systemone 接口的 questions 字段（去掉展示用 title）。"""
+        """Convert into the TypeSafe systemone questions field (drops the display-only title)."""
         return {
             qid: q.model_dump(exclude={"title"}, exclude_none=True)
             for qid, q in self.questions.items()
         }
 
     def evaluate(self, answers: dict[str, Any]) -> bool:
-        """按 match 规则判定 answers 是否命中。"""
+        """Decide whether answers match, according to the match rules."""
         checks = [
             _check(_extract_value(answers.get(c.question)), c.op, c.value)
             for c in self.match.conditions
@@ -132,7 +132,7 @@ def _check(value: Any, op: str, target: Any) -> bool:
 
 
 def format_answer_value(question: Question, answer: dict[str, Any] | None) -> str:
-    """把一条答案渲染成推送行里的短展示（0.97 / 1.8 / 选项名）。"""
+    """Render one answer as a short display value for a push line (0.97 / 1.8 / option name)."""
     value = _extract_value(answer)
     if value is None:
         return "—"

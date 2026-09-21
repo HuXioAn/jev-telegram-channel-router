@@ -1,7 +1,8 @@
-"""频道级执行管线：抓新消息 → 联合判定（缓存）→ 按订阅路由投递。
+"""Channel-level execution pipeline: fetch new posts → union judging (cached) → route per subscription.
 
-- run_watch()：一个频道的一轮刷新（调度单位=频道；见 PLAN §12）；
-- preview()：/test 试跑（按单订阅模板独立判定，不写共享缓存）。
+- run_watch(): one refresh round for a channel (the scheduler unit; see PLAN §12);
+- preview(): /test dry-run (judges with the single subscription template and never
+  writes the shared judgment cache).
 """
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ from datetime import datetime, timezone
 from . import formatting
 from .channel_fetch import ChannelError, ChannelFetcher
 from .delivery import DeliveryError, Sender
+from .i18n import t
 from .jev import JevClient
 from .judging import JudgeEngine, template_fingerprint
 from .models import Post, Template
@@ -19,15 +21,15 @@ from .store import Store, month_start, template_of
 
 @dataclass
 class RunResult:
-    sub_id: int | None = None       # 试跑：订阅编号
-    channel: str = ""               # 频道轮次：频道名
+    sub_id: int | None = None       # dry-run: subscription id
+    channel: str = ""               # channel round: channel name
     fetched: int = 0
     matched: int = 0
-    judged: int = 0                 # 本轮新判定的消息数
-    cached: int = 0                 # 命中判定缓存的消息数
+    judged: int = 0                 # posts judged fresh in this round
+    cached: int = 0                 # posts served from the judgment cache
     failed: int = 0
     sent: bool = False
-    sample: list[tuple[str, Post, dict]] = field(default_factory=list)  # 试跑样张
+    sample: list[tuple[str, Post, dict]] = field(default_factory=list)  # dry-run sample
     error: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
@@ -36,17 +38,22 @@ class RunResult:
 class Pipeline:
     def __init__(self, store: Store, fetcher: ChannelFetcher, jev: JevClient,
                  sender: Sender, chunk_limit: int = 3800,
-                 max_questions: int = 24):
+                 max_questions: int = 24, default_lang: str = "en"):
         self._store = store
         self._fetcher = fetcher
         self._jev = jev
         self._sender = sender
         self._chunk_limit = chunk_limit
+        self._default_lang = default_lang
         self._judge = JudgeEngine(store, jev, max_questions)
 
-    # ------------------------------------------------------------- 配额
+    def _lang(self, user_id: int) -> str:
+        """UI language for user-facing text produced by the pipeline."""
+        return self._store.language_for(user_id, self._default_lang)
+
+    # ---------------------------------------------------------------- quota
     def _quota_remaining(self, user_id: int) -> int | None:
-        """本月剩余判定消费额度（按用户消费的判定消息条数计）；None = 不限。"""
+        """Judgments left this month (counted per consumed post); None = unlimited."""
         user = self._store.get_user(user_id) or {}
         quota = int(user.get("quota_jev_monthly") or 0)
         if quota <= 0:
@@ -56,26 +63,26 @@ class Pipeline:
         return max(0, quota - used)
 
     def _pause_quota(self, user_id: int) -> list[int]:
-        """配额用尽：暂停该用户全部启用中的订阅；返回被暂停的编号。"""
+        """Quota exhausted: pause every enabled subscription; returns the paused ids."""
         paused = []
         for sub in self._store.list_subscriptions(user_id=user_id):
             if not sub["enabled"]:
                 continue
             self._store.set_subscription(sub["id"], enabled=0)
             self._store.log(sub["id"], "quota_exhausted",
-                            "本月判定配额已用完，订阅已自动暂停")
+                            "monthly judgment quota exhausted; subscription auto-paused")
             paused.append(sub["id"])
         return paused
 
-    # --------------------------------------------------------- 频道轮次
+    # --------------------------------------------------------- channel round
     async def run_watch(self, watch: dict) -> RunResult:
-        """一个频道的一轮：抓新消息 → 联合判定一次 → 路由到全部 watcher 订阅。"""
+        """One channel round: fetch new posts → judge once (union) → route to every watcher."""
         channel = watch["channel"]
         res = RunResult(channel=channel)
         watchers = self._store.watchers_of(channel)
         if not watchers:
             return res
-        if watch["last_seen_id"] is None:  # 首次物化：用频道头部播种抓取游标
+        if watch["last_seen_id"] is None:  # first materialization: seed from the channel head
             try:
                 info = await self._fetcher.head(channel)
             except ChannelError as exc:
@@ -97,7 +104,8 @@ class Pipeline:
             self._store.mark_watch_fetched(channel, cursor)
             return res
 
-        # ---- 联合判定：该频道全部活跃模板的问题并集，一次调用服务所有订阅
+        # ---- Union judging: one call serves every subscription on this channel
+        # (question set = union of all active templates, deduplicated)
         templates: dict[str, Template] = {}
         for sub in watchers:
             template = template_of(sub)
@@ -110,9 +118,9 @@ class Pipeline:
                 input_tokens=stats.input_tokens, output_tokens=stats.output_tokens)
         if stats.failed:
             self._store.log(None, "classify_failed",
-                            f"@{channel}: {stats.failed} 条判定失败已跳过")
+                            f"@{channel}: {stats.failed} posts failed judging (skipped)")
 
-        # ---- 路由：每个订阅按自己的消费游标取新消息 → 求值 → 投递
+        # ---- Routing: each subscription reads from its own consumption cursor → evaluate → deliver
         user_posts: dict[int, set[int]] = {}
         for sub in watchers:
             source_row = next((s for s in sub["sources"] if s["source"] == channel), None)
@@ -130,28 +138,29 @@ class Pipeline:
                     and template.evaluate(answers)]
             if hits:
                 res.matched += len(hits)
-                await self._deliver(sub, channel, hits, res, test=False)
+                await self._deliver(sub, channel, hits, res, test=False,
+                                    lang=self._lang(sub["user_id"]))
             self._store.mark_source_run(source_row["id"], max(p.id for p in mine))
 
-        # ---- 消费记账 + 配额（按用户、跨订阅去重）
+        # ---- Consumption accounting + quota (per user, deduplicated across subscriptions)
         for user_id, post_ids in user_posts.items():
             self._store.record_usage(user_id, "consumed", len(post_ids),
                                      detail=channel)
             if self._quota_remaining(user_id) == 0:
                 paused = self._pause_quota(user_id)
                 if paused:
-                    res.error = res.error or (
-                        f"用户 {user_id} 判定配额用尽，已自动暂停订阅 {paused}")
-        self._store.mark_watch_fetched(channel, cursor)  # 路由完成后推进频道游标
+                    res.error = res.error or t(self._lang(user_id), "quota_paused",
+                                               uid=user_id, paused=paused)
+        self._store.mark_watch_fetched(channel, cursor)  # advance the channel cursor after routing
         return res
 
-    # ------------------------------------------------------------- 投递
+    # ------------------------------------------------------------- delivery
     async def _deliver(self, sub: dict, source: str,
                        hits: list[tuple[Post, dict]], res: RunResult,
-                       *, test: bool) -> None:
-        """把某源频道的命中摘要发往订阅的全部目的地（各目的地独立成败）。"""
+                       *, test: bool, lang: str) -> None:
+        """Send one source's hits to every target of the subscription (independent outcomes)."""
         chunks = formatting.compose_digest(hits, chunk_limit=self._chunk_limit,
-                                           test=test)
+                                           test=test, lang=lang)
         sent_any = False
         for dest in sub["dests"]:
             label = dest["title"] or str(dest["chat_id"])
@@ -161,18 +170,18 @@ class Pipeline:
                 self._store.record_usage(sub["user_id"], "deliver", len(chunks),
                                          sub_id=sub["id"], detail=label)
             except DeliveryError as exc:
-                res.error = res.error or f"投递失败（{label}）：{exc}"
+                res.error = res.error or t(lang, "deliver_failed", label=label, err=exc)
                 self._store.log(sub["id"], "delivery_error", f"{label}: {exc}")
         if sent_any:
             res.sent = True
             self._store.log(sub["id"], "delivered",
                             f"{source}: {len(hits)} hits / {len(chunks)} msgs")
 
-    # ------------------------------------------------------------- 试跑
+    # ------------------------------------------------------------- dry-run
     async def _classify_batch(self, posts: list[Post], template: Template,
                               res: RunResult
                               ) -> tuple[list[tuple[Post, dict]], int, int, int]:
-        """按单模板判定一批消息（试跑用）；返回 (hits, 成功判定数, in tok, out tok)。"""
+        """Judge one batch with a single template (dry-run); returns (hits, judged, in tok, out tok)."""
         results = await self._jev.classify_many([p.text for p in posts], template)
         hits: list[tuple[Post, dict]] = []
         judged, tin, tout = 0, 0, 0
@@ -192,14 +201,17 @@ class Pipeline:
         return hits, judged, tin, tout
 
     async def preview(self, sub: dict, pool: int = 120, limit: int = 6) -> RunResult:
-        """试跑：逐源拉最近 pool 条样本判定；样张（每源最新 limit 条）发往全部目的地；
-        不推进游标、不写共享缓存；仍计入用量与配额。"""
+        """Dry-run: fetch the latest pool posts per source and judge them; the sample
+        (latest limit hits per source) goes to every target; cursors are not advanced
+        and the shared cache is not written; usage/quota still apply.
+        """
         res = RunResult(sub_id=sub["id"])
         template = template_of(sub)
         user_id = sub["user_id"]
+        lang = self._lang(user_id)
         remaining = self._quota_remaining(user_id)
         if remaining is not None and remaining <= 0:
-            res.error = "本月判定配额已用完（试跑同样计入配额）。"
+            res.error = t(lang, "preview_quota_exhausted")
             return res
         for src in sub["sources"]:
             source = src["source"]
@@ -227,9 +239,10 @@ class Pipeline:
                                          detail=f"preview:{source}")
             if remaining is not None:
                 remaining = max(0, remaining - judged)
-            sample_hits = hits[-limit:]  # 该源最新 limit 条，保持时间顺序
+            sample_hits = hits[-limit:]  # latest limit hits, chronological order
             res.sample.extend((source, post, answers)
                               for post, answers in reversed(sample_hits))
             if sample_hits:
-                await self._deliver(sub, source, sample_hits, res, test=True)
+                await self._deliver(sub, source, sample_hits, res, test=True, lang=lang)
         return res
+

@@ -1,4 +1,4 @@
-"""bot.handlers 离线单测：频道登记事件（合成 ChatMemberUpdated + 假 bot）。"""
+"""bot.handlers offline unit tests: channel registration events (synthetic ChatMemberUpdated + fake bot)."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -23,11 +23,11 @@ class FakeBot:
 
     def __init__(self) -> None:
         self.sent: list[tuple[int, str]] = []
-        self.sent_markups: list = []    # send_message 的 reply_markup
+        self.sent_markups: list = []    # reply_markup passed to send_message
         self.edited: list[str] = []
-        self.edited_markups: list = []  # edit_message_text 的 reply_markup
-        self.members: dict[int, str] = {}  # user_id → 状态（get_chat_member 桩数据）
-        self.answers: list[tuple[str | None, bool]] = []  # 回调查询的应答（文案, 是否弹窗）
+        self.edited_markups: list = []  # reply_markup passed to edit_message_text
+        self.members: dict[int, str] = {}  # user_id → status (get_chat_member stub data)
+        self.answers: list[tuple[str | None, bool]] = []  # callback query answers (text, show_alert)
 
     async def send_message(self, chat_id, text, **kwargs):
         self.sent.append((chat_id, text))
@@ -45,7 +45,7 @@ class FakeBot:
 
 
 class FakeFetcher:
-    """只提供 head 的抓取器桩（向导/编辑里添加频道用）。"""
+    """Fetcher stub that only provides head (used to add channels in the wizard/edit flows)."""
 
     def __init__(self, head_id: int = 500, error: str | None = None):
         self.head_id = head_id
@@ -62,7 +62,7 @@ class FakeFetcher:
 
 
 class FakeCompiler:
-    """模板编译器桩：返回固定模板 + 固定用量。"""
+    """Template compiler stub: returns a fixed template + fixed usage."""
 
     def __init__(self, template=None):
         self.template = template or make_template()
@@ -98,7 +98,8 @@ def _make(tmp_path):
     bot = FakeBot()
     context = SimpleNamespace(
         application=SimpleNamespace(bot_data={
-            "services": SimpleNamespace(store=store, settings=Settings())}),
+            "services": SimpleNamespace(store=store,
+                                        settings=Settings(default_lang="zh"))}),
         bot=bot, user_data={})
     return store, bot, context
 
@@ -139,12 +140,14 @@ async def test_leave_removes_chat(tmp_path):
 
 
 def test_bot_commands_menu_covers_all_handlers():
-    """客户端 “/” 菜单注册的命令必须覆盖全部处理器命令。"""
-    from tgfilter.bot.app import BOT_COMMANDS
+    """The client "/" menu must cover every handler command, in every language."""
+    from tgfilter import i18n
 
-    names = {c.command for c in BOT_COMMANDS}
-    assert names == {"start", "new", "list", "test", "help", "cancel"}
-    assert all(3 <= len(c.description) <= 256 for c in BOT_COMMANDS)
+    expected = {"start", "new", "list", "test", "lang", "help", "cancel"}
+    for lang in i18n.LANGS:
+        names = {cmd for cmd, _ in i18n.COMMANDS[lang]}
+        assert names == expected
+        assert all(3 <= len(desc) <= 256 for _, desc in i18n.COMMANDS[lang])
 
 
 def _text_update(text: str = "你好") -> Update:
@@ -155,7 +158,7 @@ def _text_update(text: str = "你好") -> Update:
 
 
 async def test_plain_text_gets_fallback_hint(tmp_path):
-    """私聊纯文本不再石沉大海：兜底回复引导性提示。"""
+    """Plain text in a DM no longer falls into the void: a fallback reply offers guidance."""
     store, bot, context = _make(tmp_path)
     update = _text_update()
     update.message.set_bot(bot)
@@ -171,7 +174,7 @@ def _group_update(text: str = "/list") -> Update:
 
 
 def test_resolve_dest_chat_only_for_owner(tmp_path):
-    """目的地频道归属校验：非添加者不可选（多用户隔离）。"""
+    """Destination channel ownership check: non-adders cannot select it (multi-user isolation)."""
     store, bot, context = _make(tmp_path)
     store.upsert_chat(CHAT_ID, "channel", "测试频道", USER_ID)
     assert h.resolve_dest_chat(store, USER_ID, CHAT_ID)["title"] == "测试频道"
@@ -180,7 +183,7 @@ def test_resolve_dest_chat_only_for_owner(tmp_path):
 
 
 async def test_group_commands_refuse_private_data(tmp_path):
-    """群里执行 /list：只提示去私聊，不泄露任何订阅数据。"""
+    """Running /list inside a group: only points the user to the DM, leaking no subscription data."""
     store, bot, context = _make(tmp_path)
     store.add_subscription(user_id=USER_ID, source="chan", template=make_template(),
                            dest_kind="dm", dest_chat_id=USER_ID, dest_title="私聊",
@@ -193,7 +196,7 @@ async def test_group_commands_refuse_private_data(tmp_path):
 
 
 async def test_channel_demotion_removes_registration(tmp_path):
-    """频道内被降权（管理员 → 普通成员）时移除登记，目的地列表不留脏项。"""
+    """Demoted inside the channel (administrator → regular member): the registration is removed so the destination list keeps no stale entries."""
     store, bot, context = _make(tmp_path)
     await h.on_my_chat_member(_member_update("channel", _admin()), context)
     assert store.get_chat(CHAT_ID) is not None
@@ -220,7 +223,7 @@ def _attach_bot(update: Update, bot: FakeBot) -> None:
 
 
 async def test_dest_manager_accepts_channel_admin(tmp_path):
-    """bot 与用户均为频道管理员 → 频道加入目的地（新建流程）。"""
+    """Both the bot and the user are channel admins → the channel is accepted as a destination (creation flow)."""
     store, bot, context = _make(tmp_path)
     store.upsert_chat(CHAT_ID, "channel", "测试频道", USER_ID)
     bot.members = {BOT_ID: "administrator", USER_ID: "administrator"}
@@ -234,7 +237,7 @@ async def test_dest_manager_accepts_channel_admin(tmp_path):
 
 
 async def test_dest_manager_rejects_user_no_longer_admin(tmp_path):
-    """用户不再是频道管理员时拒绝（防陈旧权限）。"""
+    """Rejected once the user is no longer a channel admin (guards against stale permissions)."""
     store, bot, context = _make(tmp_path)
     store.upsert_chat(CHAT_ID, "channel", "测试频道", USER_ID)
     bot.members = {BOT_ID: "administrator", USER_ID: "member"}
@@ -248,19 +251,19 @@ async def test_dest_manager_rejects_user_no_longer_admin(tmp_path):
 
 
 async def test_dest_manager_rejects_last_removal(tmp_path):
-    """目的地不允许删空：最后一个目的地弹出警告且不删。"""
+    """Destinations may not be emptied: removing the last one pops a warning and deletes nothing."""
     store, bot, context = _make(tmp_path)
     context.user_data["dests"] = [{"kind": "dm", "chat_id": USER_ID, "title": "私聊"}]
     update = _cb_update("md:rm:new:0")
     _attach_bot(update, bot)
     state = await h.on_dest_manager(update, context)
     assert state == h.WAIT_DEST
-    assert context.user_data["dests"]  # 未被删除
+    assert context.user_data["dests"]  # not deleted
     assert bot.answers[-1] == ("⚠️ 至少要保留一个目的地。", True)
 
 
 async def test_subscription_cap_per_user(tmp_path):
-    """每人订阅数上限：达到上限后不再新建。"""
+    """Per-user subscription cap: no new subscription once the cap is reached."""
     store, bot, context = _make(tmp_path)
     template = make_template()
     for index in range(h.MAX_SUBS_PER_USER):
@@ -279,7 +282,7 @@ async def test_subscription_cap_per_user(tmp_path):
 
 
 async def test_blocked_user_commands_refused(tmp_path):
-    """被管理员停用后：/list、/test 只回提示，不提供任何功能。"""
+    """After an admin blocks the user: /list and /test only return a notice and expose no functionality."""
     store, bot, context = _make(tmp_path)
     store.add_user(USER_ID, "ant")
     store.set_user_fields(USER_ID, status="blocked")
@@ -293,7 +296,7 @@ async def test_blocked_user_commands_refused(tmp_path):
     assert "暂停" in bot.sent[-1][1]
 
 
-# --------------------------------------------------------- 订阅列表（选择菜单）
+# --------------------------------------------------------- subscription list (picker menu)
 def _kb_datas(markup) -> list[str]:
     return [b.callback_data for row in markup.inline_keyboard for b in row]
 
@@ -307,21 +310,21 @@ def _quick_sub(store, name: str, title: str = "私聊", kind: str = "dm",
 
 
 async def test_list_is_single_pick_message(tmp_path):
-    """/list 改为单条消息 + 条目选择菜单（不再是每条订阅各带一排按钮）。"""
+    """/list becomes a single message plus an entry picker (no longer one row of buttons per subscription)."""
     store, bot, context = _make(tmp_path)
     id1 = _quick_sub(store, "chan_a")
     id2 = _quick_sub(store, "chan_b", "测试频道", kind="channel", chat_id=CHAT_ID)
     update = _text_update("/list")
     update.message.set_bot(bot)
     await h.cmd_list(update, context)
-    assert len(bot.sent) == 1  # 单条选择消息，而不是每订阅一条
+    assert len(bot.sent) == 1  # a single picker message, not one per subscription
     text = bot.sent[0][1]
     assert "我的订阅" in text and f"#{id1}" in text and f"#{id2}" in text
     assert _kb_datas(bot.sent_markups[0]) == [f"sub:open:{id1}", f"sub:open:{id2}"]
 
 
 async def test_sub_pick_opens_entry_actions(tmp_path):
-    """点选条目 → 该条目的详情 + 操作按钮（含「⬅️ 返回列表」）。"""
+    """Picking an entry → that entry's detail view + action buttons (including `⬅️ Back to list`)."""
     store, bot, context = _make(tmp_path)
     sub_id = _quick_sub(store, "chan_a")
     update = _cb_update(f"sub:open:{sub_id}")
@@ -334,7 +337,7 @@ async def test_sub_pick_opens_entry_actions(tmp_path):
 
 
 async def test_sub_back_list_returns_to_picker(tmp_path):
-    """「⬅️ 返回列表」回到选择菜单。"""
+    """`⬅️ Back to list` returns to the picker menu."""
     store, bot, context = _make(tmp_path)
     sub_id = _quick_sub(store, "chan_a")
     update = _cb_update("sub:list")
@@ -345,7 +348,7 @@ async def test_sub_back_list_returns_to_picker(tmp_path):
 
 
 async def test_sub_pick_rejects_foreign_subscription(tmp_path):
-    """选中别人的订阅编号 → 按未找到处理。"""
+    """Picking someone else's subscription id → handled as not found."""
     store, bot, context = _make(tmp_path)
     sub_id = store.add_subscription(user_id=USER_ID + 1, source="chan_x",
                                     template=make_template(), interval_minutes=20,
@@ -358,7 +361,7 @@ async def test_sub_pick_rejects_foreign_subscription(tmp_path):
 
 
 async def test_sub_delete_returns_to_fresh_picker(tmp_path):
-    """删除后自动回到刷新过的选择菜单（不残留操作按钮的空壳）。"""
+    """After deletion it returns to a freshly built picker menu (no hollow shell left with action buttons)."""
     store, bot, context = _make(tmp_path)
     id1 = _quick_sub(store, "chan_a")
     id2 = _quick_sub(store, "chan_b", "测试频道", kind="channel", chat_id=CHAT_ID)
@@ -370,7 +373,7 @@ async def test_sub_delete_returns_to_fresh_picker(tmp_path):
 
 
 async def test_llm_compile_records_usage(tmp_path):
-    """模板编译计入 llm 用量：qty=API 调用次数，并记录真实 input/output token。"""
+    """Template compilation counts as llm usage: qty = number of API calls, plus the real input/output tokens."""
     store, bot, context = _make(tmp_path)
 
     context.application.bot_data["services"].compiler = FakeCompiler()
@@ -382,9 +385,9 @@ async def test_llm_compile_records_usage(tmp_path):
         "count": 1, "in": 900, "out": 60}
 
 
-# ------------------------------------------------------------ 向导（n 源 → m 目的地）
+# ------------------------------------------------------------ wizard (n sources → m destinations)
 def _edit_env(tmp_path):
-    """已有 1 源 1 私聊目的地的订阅，供编辑流程测试。"""
+    """An existing subscription with 1 source and 1 DM destination, for the edit-flow tests."""
     store, bot, context = _make(tmp_path)
     sub_id = store.add_subscription(
         user_id=USER_ID, template=make_template(), interval_minutes=20,
@@ -394,7 +397,7 @@ def _edit_env(tmp_path):
 
 
 async def test_create_flow_multi_sources_and_dests(tmp_path):
-    """向导全流程：两个源频道 + 多目的地 → 一条 n:n 订阅。"""
+    """Full wizard flow: two source channels + several destinations → one n:n subscription."""
     store, bot, context = _make(tmp_path)
     services = context.application.bot_data["services"]
     services.fetcher = FakeFetcher()
@@ -435,16 +438,16 @@ async def test_create_flow_multi_sources_and_dests(tmp_path):
     assert len(subs) == 1
     sub = subs[0]
     assert [s["source"] for s in sub["sources"]] == ["chan_a", "chan_b"]
-    assert [s["last_seen_id"] for s in sub["sources"]] == [500, 500]  # 从头部起
+    assert [s["last_seen_id"] for s in sub["sources"]] == [500, 500]  # start from the head
     assert [d["chat_id"] for d in sub["dests"]] == [CHAT_ID, USER_ID]
     assert sub["interval_minutes"] == services.settings.default_interval_minutes
     assert sub["enabled"] == 1
     assert any("已创建" in text for text in bot.edited)
 
 
-# ------------------------------------------------------------------ 编辑流程
+# ------------------------------------------------------------------ edit flow
 async def test_edit_menu_offers_source_dest_template(tmp_path):
-    """✏️ 编辑 → 编辑菜单：源频道 / 目的地 / 筛选模板（频率已取消）。"""
+    """✏️ Edit → edit menu: source channels / destinations / filter template (frequency was dropped)."""
     store, bot, context, sub_id = _edit_env(tmp_path)
     update = _cb_update(f"sub:edit:{sub_id}")
     _attach_bot(update, bot)
@@ -457,7 +460,7 @@ async def test_edit_menu_offers_source_dest_template(tmp_path):
 
 
 async def test_edit_template_overwrites(tmp_path):
-    """编辑模板：etpl → 重新描述 → 确认覆盖保存，会话结束。"""
+    """Edit template: etpl → describe again → confirm overwrite and save; the conversation ends."""
     store, bot, context, sub_id = _edit_env(tmp_path)
     new_template = make_template().model_copy(update={"name": "新模板"})
     context.application.bot_data["services"].compiler = FakeCompiler(new_template)
@@ -470,7 +473,7 @@ async def test_edit_template_overwrites(tmp_path):
     update = _text_update("换个筛选条件")
     update.message.set_bot(bot)
     assert await h.on_describe(update, context) == h.CONFIRM_TEMPLATE
-    assert any("覆盖" in text for _, text in bot.sent)  # 确认文案为编辑语义
+    assert any("覆盖" in text for _, text in bot.sent)  # confirmation copy carries editing semantics
 
     update = _cb_update("tpl:confirm")
     _attach_bot(update, bot)
@@ -483,7 +486,7 @@ async def test_edit_template_overwrites(tmp_path):
 
 
 async def test_edit_sources_add_remove(tmp_path):
-    """编辑源频道：添加（游标=当前头部）、移除；不允许删空。"""
+    """Edit source channels: add (cursor = current head), remove; emptying is not allowed."""
     store, bot, context, sub_id = _edit_env(tmp_path)
     context.application.bot_data["services"].fetcher = FakeFetcher(head_id=777)
 
@@ -507,12 +510,12 @@ async def test_edit_sources_add_remove(tmp_path):
     update = _cb_update(f"ms:rm:{sub_id}:{sub['sources'][0]['id']}")
     _attach_bot(update, bot)
     await h.on_src_manager(update, context)
-    assert len(store.get_subscription(sub_id)["sources"]) == 1  # 未删空
+    assert len(store.get_subscription(sub_id)["sources"]) == 1  # not emptied
     assert bot.answers[-1] == ("⚠️ 至少要保留一个源频道。", True)
 
 
 async def test_edit_dests_add_and_remove(tmp_path):
-    """编辑目的地：加频道（权限复核）、移除；不允许删空。"""
+    """Edit destinations: add a channel (permissions re-checked), remove; emptying is not allowed."""
     store, bot, context, sub_id = _edit_env(tmp_path)
     store.upsert_chat(CHAT_ID, "channel", "测试频道", USER_ID)
     bot.members = {BOT_ID: "administrator", USER_ID: "administrator"}
@@ -532,12 +535,12 @@ async def test_edit_dests_add_and_remove(tmp_path):
     update = _cb_update(f"md:rm:{sub_id}:{sub['dests'][0]['id']}")
     _attach_bot(update, bot)
     await h.on_dest_manager(update, context)
-    assert len(store.get_subscription(sub_id)["dests"]) == 1  # 未删空
+    assert len(store.get_subscription(sub_id)["dests"]) == 1  # not emptied
     assert bot.answers[-1] == ("⚠️ 至少要保留一个目的地。", True)
 
 
 async def test_edit_refuses_other_users_sub(tmp_path):
-    """多用户隔离：改不了别人的订阅（猜编号无效）。"""
+    """Multi-user isolation: someone else's subscription cannot be edited (guessing the id is useless)."""
     store, bot, context, sub_id = _edit_env(tmp_path)
     update = _cb_update(f"etpl:{sub_id}", user_id=USER_ID + 1)
     _attach_bot(update, bot)

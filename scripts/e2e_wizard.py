@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""端到端调试：用合成 Update 驱动真实 Application。
+"""End-to-end debugging: drive a real Application with synthetic Updates.
 
-真实链路：真 Bot API 会话（消息真的发到用户 DM）/ 真 DeepSeek 编译 / 真 Jev 试跑。
-前提：目标用户已在该 bot 私聊里按过 /start（否则 bot 不能主动发消息）。
+Real chain: real Bot API session (messages really reach the user's DM) / real DeepSeek compilation / real Jev dry run.
+Prerequisite: the target user has already pressed /start in this bot's DM (otherwise the bot cannot send messages proactively).
 
-用法：
-    python scripts/e2e_wizard.py <user_id> [channel] [描述]     # 完整向导 + 试跑
-    python scripts/e2e_wizard.py <user_id> --test <订阅编号>     # 只跑 /test 试跑
+Usage:
+    python scripts/e2e_wizard.py <user_id> [channel] [description]     # full wizard + dry run
+    python scripts/e2e_wizard.py <user_id> --test <subscription id>    # only the /test dry run
 
-效果：用户 DM 会依次收到：/start 欢迎 → /new 提问 → 频道确认 → 模板确认（带按钮）
-     → 目的地选择 → 频率选择 → 订阅创建 → /test 试跑结果。
+Effect: the user's DM receives, in order: /start welcome → /new prompts → channel confirmation → template confirmation (with buttons)
+     → destination picker → frequency picker → subscription created → /test dry-run result.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from tgfilter.bot.app import build_application  # noqa: E402
 from tgfilter.config import Settings  # noqa: E402
 from tgfilter.store import Store  # noqa: E402
 
-_state = {"update_id": 1000, "outbox": []}  # outbox：bot 发出的所有消息（含编辑后的）
+_state = {"update_id": 1000, "outbox": []}  # outbox: every message the bot sent (including edited ones)
 
 
 def _next_id() -> int:
@@ -59,7 +59,7 @@ def _callback(user_id: int, message: Message, data: str) -> Update:
 
 
 def _attach(update: Update, bot) -> Update:
-    """手工构造的 PTB 对象需显式绑定 bot，否则 reply_text / edit 等快捷方法不可用。"""
+    """Hand-built PTB objects need an explicit bot binding, otherwise shortcuts such as reply_text / edit are unavailable."""
     update.set_bot(bot)
     if update.message is not None:
         update.message.set_bot(bot)
@@ -126,7 +126,7 @@ async def main() -> None:
     settings = Settings.load()
     app = build_application(settings)
 
-    # PTB 的 TelegramObject 禁止实例级 monkeypatch（__slots__ 保护），改在类上打补丁
+    # PTB's TelegramObject forbids instance-level monkeypatching (guarded by __slots__), so patch the class instead
     original_send = ExtBot.send_message
     original_edit = ExtBot.edit_message_text
 
@@ -149,12 +149,12 @@ async def main() -> None:
 
     original_answer = CallbackQuery.answer
 
-    async def noop_answer(self, *args, **kwargs):  # 合成 callback 的 id 无效，屏蔽 answer
+    async def noop_answer(self, *args, **kwargs):  # the synthetic callback id is invalid, so answer is suppressed
         return True
 
     CallbackQuery.answer = noop_answer
     await app.initialize()
-    # initialize() 不会触发 post_init（只有 run_polling/run_webhook 会），这里手动装配 services
+    # initialize() does not trigger post_init (only run_polling/run_webhook does), so assemble services manually here
     if app.post_init is not None:
         await app.post_init(app)
 
