@@ -81,16 +81,18 @@ def test_logs_recorded(tmp_path):
 
 def test_usage_recording_and_aggregates(tmp_path):
     store = _store(tmp_path)
-    store.record_usage(1, "jev", 3, sub_id=9)
+    store.record_usage(1, "jev", 3, sub_id=9, input_tokens=100, output_tokens=10)
     store.record_usage(1, "jev", 2)
     store.record_usage(2, "jev", 5)
     store.record_usage(1, "llm", 1, detail="desc")
     assert store.usage_sum(user_id=1, kind="jev") == 5
     assert store.usage_sum(kind="jev") == 10
     assert store.usage_by_kind(user_id=1) == {"jev": 5, "llm": 1}
+    assert store.usage_rollup(user_id=1)["jev"] == {"count": 5, "in": 100, "out": 10}
     rows = store.usage_rows()
-    assert {(r["user_id"], r["kind"], r["s"]) for r in rows} == {
-        (1, "jev", 5), (2, "jev", 5), (1, "llm", 1)}
+    assert {(r["user_id"], r["kind"], r["s"], r["tin"], r["tout"])
+            for r in rows} == {
+        (1, "jev", 5, 100, 10), (2, "jev", 5, 0, 0), (1, "llm", 1, 0, 0)}
     assert store.recent_usage(user_id=1, limit=1)[0]["detail"] == "desc"
 
 
@@ -126,3 +128,22 @@ def test_migration_adds_new_user_columns(tmp_path):
     user = store.get_user(1)
     assert user["status"] == "active" and user["max_subs"] is None
     assert user["quota_jev_monthly"] is None
+
+
+def test_migration_adds_usage_token_columns(tmp_path):
+    """旧版 usage 表（无 token 列）初始化时自动迁移，可直接记录与聚合。"""
+    import sqlite3
+
+    path = str(tmp_path / "old_usage.db")
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT,"
+        " created_at TEXT NOT NULL);"
+        "CREATE TABLE usage (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL,"
+        " user_id INTEGER NOT NULL, sub_id INTEGER, kind TEXT NOT NULL,"
+        " qty INTEGER NOT NULL DEFAULT 1, detail TEXT);")
+    conn.commit()
+    conn.close()
+    store = Store(path)
+    store.record_usage(1, "jev", 2, input_tokens=50, output_tokens=5)
+    assert store.usage_rollup(user_id=1)["jev"] == {"count": 2, "in": 50, "out": 5}

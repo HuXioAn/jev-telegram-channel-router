@@ -30,16 +30,35 @@ HELP_TEXT = (
 )
 
 
-def _fmt_counts(counts: dict[str, int]) -> str:
-    parts = [f"{_KIND_LABEL.get(k, k)} {counts[k]}"
-             for k in _KIND_ORDER if counts.get(k)]
+def _tok(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.2f}M"
+    if n >= 10_000:
+        return f"{n / 1000:.1f}k"
+    return str(n)
+
+
+def _fmt_rollup(rollup: dict[str, dict[str, int]]) -> str:
+    """用量汇总行：非 token 维度只报次数；jev/llm 附真实 token（in→out）。"""
+    parts = []
+    for kind in _KIND_ORDER:
+        item = rollup.get(kind)
+        if not item or not item.get("count"):
+            continue
+        label = _KIND_LABEL.get(kind, kind)
+        if item.get("in") or item.get("out"):
+            parts.append(f"{label} {item['count']}"
+                         f"（tok {_tok(item['in'])}→{_tok(item['out'])}）")
+        else:
+            parts.append(f"{label} {item['count']}")
     return " ｜ ".join(parts) if parts else "无"
 
 
-def _aggregate(rows: list[dict]) -> dict[int, dict[str, int]]:
-    agg: dict[int, dict[str, int]] = {}
+def _aggregate(rows: list[dict]) -> dict[int, dict[str, dict[str, int]]]:
+    agg: dict[int, dict[str, dict[str, int]]] = {}
     for row in rows:
-        agg.setdefault(row["user_id"], {})[row["kind"]] = int(row["s"])
+        agg.setdefault(row["user_id"], {})[row["kind"]] = {
+            "count": int(row["s"]), "in": int(row["tin"]), "out": int(row["tout"])}
     return agg
 
 
@@ -108,16 +127,18 @@ def _overview(svc) -> str:
                          ("7 天", now - timedelta(days=7)),
                          ("30 天", now - timedelta(days=30)),
                          ("累计", None)):
-        lines.append(f"📊 {label}：{_fmt_counts(store.usage_by_kind(since=since))}")
+        lines.append(f"📊 {label}：{_fmt_rollup(store.usage_rollup(since=since))}")
     agg = _aggregate(store.usage_rows(since=now - timedelta(days=30)))
-    ranked = sorted(agg.items(), key=lambda kv: sum(kv[1].values()), reverse=True)[:5]
+    ranked = sorted(agg.items(),
+                    key=lambda kv: sum(v["count"] for v in kv[1].values()),
+                    reverse=True)[:5]
     if ranked:
         lines.append("")
         lines.append("🏆 30 天用量 Top 5：")
         for uid, counts in ranked:
             user = store.get_user(uid) or {}
             name = f"@{user['username']}" if user.get("username") else ""
-            lines.append(f"· {uid} {name} — {_fmt_counts(counts)}")
+            lines.append(f"· {uid} {name} — {_fmt_rollup(counts)}")
     return "\n".join(lines)
 
 
@@ -132,7 +153,7 @@ def _users(svc, limit: int) -> str:
         name = f"@{user['username']}" if user["username"] else ""
         subs = store.count_subscriptions_for(user["id"])
         lines.append(f"{mark} {user['id']} {name}｜订阅 {subs}"
-                     f"｜{_fmt_counts(agg.get(user['id'], {}))}")
+                     f"｜{_fmt_rollup(agg.get(user['id'], {}))}")
     if not users:
         lines.append("（暂无用户）")
     return "\n".join(lines)
@@ -152,6 +173,11 @@ def _user_detail(svc, uid: int) -> str:
     if user["quota_jev_monthly"]:
         used = store.usage_sum(user_id=uid, kind="jev", since=month_start(now))
         lines.append(f"本月 Jev 已用：{used} / {user['quota_jev_monthly']}")
+    month_rollup = store.usage_rollup(user_id=uid, since=month_start(now))
+    month_in = sum(item["in"] for item in month_rollup.values())
+    month_out = sum(item["out"] for item in month_rollup.values())
+    if month_in or month_out:
+        lines.append(f"本月 token：in {month_in:,} → out {month_out:,}")
     if user["note"]:
         lines.append(f"备注：{user['note']}")
     subs = store.list_subscriptions(user_id=uid)
@@ -169,7 +195,7 @@ def _user_detail(svc, uid: int) -> str:
                          ("7 天", now - timedelta(days=7)),
                          ("30 天", now - timedelta(days=30)),
                          ("累计", None)):
-        lines.append(f"📊 {label}：{_fmt_counts(store.usage_by_kind(user_id=uid, since=since))}")
+        lines.append(f"📊 {label}：{_fmt_rollup(store.usage_rollup(user_id=uid, since=since))}")
     events = store.recent_usage(user_id=uid, limit=8)
     if events:
         lines.append("")
@@ -179,7 +205,9 @@ def _user_detail(svc, uid: int) -> str:
             ref = f" #{event['sub_id']}" if event["sub_id"] else ""
             detail = f"（{event['detail']}）" if event["detail"] else ""
             label = _KIND_LABEL.get(event["kind"], event["kind"])
-            lines.append(f"· {ts} {label}×{event['qty']}{ref}{detail}")
+            tokens = (f" tok:{event['input_tokens']}→{event['output_tokens']}"
+                      if event["input_tokens"] or event["output_tokens"] else "")
+            lines.append(f"· {ts} {label}×{event['qty']}{tokens}{ref}{detail}")
     return "\n".join(lines)
 
 
@@ -187,14 +215,16 @@ def _usage_summary(svc, days: int) -> str:
     store = svc.store
     since = datetime.now(timezone.utc) - timedelta(days=days)
     agg = _aggregate(store.usage_rows(since=since))
-    ranked = sorted(agg.items(), key=lambda kv: sum(kv[1].values()), reverse=True)
-    total = store.usage_by_kind(since=since)
+    ranked = sorted(agg.items(),
+                    key=lambda kv: sum(v["count"] for v in kv[1].values()),
+                    reverse=True)
+    total = store.usage_rollup(since=since)
     lines = [f"📊 用量汇总（最近 {days} 天｜用户 {len(ranked)}"
-             f"｜合计 {_fmt_counts(total)}）", ""]
+             f"｜合计 {_fmt_rollup(total)}）", ""]
     for uid, counts in ranked[:20]:
         user = store.get_user(uid) or {}
         name = f"@{user['username']}" if user.get("username") else ""
-        lines.append(f"· {uid} {name} — {_fmt_counts(counts)}")
+        lines.append(f"· {uid} {name} — {_fmt_rollup(counts)}")
     if not ranked:
         lines.append("（无记录）")
     return "\n".join(lines)

@@ -26,9 +26,10 @@ def _settings() -> Settings:
                     openai_model="test-model")
 
 
-def _ok_response(content: str) -> httpx.Response:
+def _ok_response(content: str, tokens: tuple[int, int] = (120, 30)) -> httpx.Response:
     return httpx.Response(200, json={
-        "choices": [{"message": {"role": "assistant", "content": content}}]})
+        "choices": [{"message": {"role": "assistant", "content": content}}],
+        "usage": {"prompt_tokens": tokens[0], "completion_tokens": tokens[1]}})
 
 
 def _compiler(handler) -> tuple[TemplateCompiler, httpx.AsyncClient]:
@@ -46,10 +47,11 @@ async def test_compile_success_and_sends_json_mode():
 
     compiler, http = _compiler(handler)
     try:
-        template = await compiler.compile("中国相关的消息")
+        template, usage = await compiler.compile("中国相关的消息")
     finally:
         await http.aclose()
     assert template.name == "中国"
+    assert usage == {"input_tokens": 120, "output_tokens": 30, "calls": 1}
     assert len(bodies) == 1
     assert bodies[0]["response_format"] == {"type": "json_object"}
     assert bodies[0]["messages"][0]["role"] == "system"
@@ -62,7 +64,7 @@ async def test_compile_strips_markdown_fences():
 
     compiler, http = _compiler(handler)
     try:
-        template = await compiler.compile("中国相关的消息")
+        template, _ = await compiler.compile("中国相关的消息")
     finally:
         await http.aclose()
     assert template.name == "中国"
@@ -80,7 +82,7 @@ async def test_compile_degrades_without_json_mode():
 
     compiler, http = _compiler(handler)
     try:
-        template = await compiler.compile("中国相关的消息")
+        template, _ = await compiler.compile("中国相关的消息")
     finally:
         await http.aclose()
     assert template.name == "中国"
@@ -101,10 +103,12 @@ async def test_compile_retries_with_error_note_on_invalid_json():
 
     compiler, http = _compiler(handler)
     try:
-        template = await compiler.compile("中国相关的消息")
+        template, usage = await compiler.compile("中国相关的消息")
     finally:
         await http.aclose()
     assert template.name == "中国"
+    assert usage["calls"] == 2  # 修复重试也计调用与 token
+    assert usage["input_tokens"] == 240 and usage["output_tokens"] == 60
     assert len(bodies) == 2
     assert "corrected" in bodies[1]["messages"][-1]["content"]
 
@@ -114,9 +118,10 @@ async def test_compile_raises_after_two_failures():
         return _ok_response("依然不是 JSON")
 
     compiler, http = _compiler(handler)
-    with pytest.raises(LLMError):
+    with pytest.raises(LLMError) as err:
         await compiler.compile("中国相关的消息")
     await http.aclose()
+    assert err.value.usage["calls"] == 2  # 失败也带已产生的真实用量
 
 
 async def test_compile_rejects_schema_violations():
@@ -182,7 +187,7 @@ async def test_compile_degrades_when_temperature_rejected():
 
     compiler, http = _compiler(handler)
     try:
-        template = await compiler.compile("中国相关的消息")
+        template, _ = await compiler.compile("中国相关的消息")
     finally:
         await http.aclose()
     assert template.name == "中国"
@@ -190,3 +195,19 @@ async def test_compile_degrades_when_temperature_rejected():
     assert "response_format" in bodies[0] and "temperature" in bodies[0]
     assert "response_format" not in bodies[1] and "temperature" in bodies[1]
     assert "response_format" not in bodies[2] and "temperature" not in bodies[2]
+
+
+async def test_compile_accepts_input_tokens_style_usage():
+    """部分兼容端点用 input_tokens/output_tokens 命名，同样要能捕获。"""
+    def handler(request):
+        return httpx.Response(200, json={
+            "choices": [{"message": {"role": "assistant",
+                                     "content": json.dumps(GOOD_TEMPLATE)}}],
+            "usage": {"input_tokens": 77, "output_tokens": 11}})
+
+    compiler, http = _compiler(handler)
+    try:
+        _, usage = await compiler.compile("中国相关的消息")
+    finally:
+        await http.aclose()
+    assert usage["input_tokens"] == 77 and usage["output_tokens"] == 11

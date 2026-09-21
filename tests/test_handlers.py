@@ -241,16 +241,17 @@ async def test_blocked_user_commands_refused(tmp_path):
 
 
 async def test_llm_compile_records_usage(tmp_path):
-    """模板编译计入 llm 用量（成功与失败都计，便于计费）。"""
+    """模板编译计入 llm 用量：qty=API 调用次数，并记录真实 input/output token。"""
     store, bot, context = _make(tmp_path)
 
     class FakeCompiler:
         async def compile(self, text, feedback=None, previous=None):
-            return make_template()
+            return make_template(), {"input_tokens": 900, "output_tokens": 60, "calls": 1}
 
     context.application.bot_data["services"].compiler = FakeCompiler()
     update = _text_update("只要是与中国相关的消息")
     update.message.set_bot(bot)
     state = await h.on_describe(update, context)
     assert state == h.CONFIRM_TEMPLATE
-    assert store.usage_sum(user_id=USER_ID, kind="llm") == 1
+    assert store.usage_rollup(user_id=USER_ID)["llm"] == {
+        "count": 1, "in": 900, "out": 60}

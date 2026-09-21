@@ -44,6 +44,14 @@ def _blocked(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
     return user.get("status") == "blocked"
 
 
+def _record_llm(svc, user_id: int, usage: dict, detail: str) -> None:
+    """记录一次模板编译的真实用量：qty=API 调用次数，另计 input/output token。"""
+    svc.store.record_usage(
+        user_id, "llm", int(usage.get("calls") or 1), detail=detail,
+        input_tokens=int(usage.get("input_tokens") or 0),
+        output_tokens=int(usage.get("output_tokens") or 0))
+
+
 def resolve_dest_chat(store, user_id: int, chat_id: int) -> dict | None:
     """目的地频道归属校验：只有把机器人添加进该频道的人才能选它。"""
     chat = store.get_chat(chat_id)
@@ -160,13 +168,14 @@ async def on_describe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
             return WAIT_DESCRIBE
         await update.effective_message.reply_text(msg.COMPILING)
         try:
-            template = await svc.compiler.compile(text)
+            template, llm_usage = await svc.compiler.compile(text)
         except LLMError as exc:
-            svc.store.record_usage(update.effective_user.id, "llm", 1, detail="failed")
+            _record_llm(svc, update.effective_user.id,
+                        getattr(exc, "usage", {}) or {}, "failed")
             await update.effective_message.reply_text(
                 msg.COMPILE_FAILED.format(err=str(exc)[:300]))
             return WAIT_DESCRIBE
-        svc.store.record_usage(update.effective_user.id, "llm", 1, detail=text[:60])
+        _record_llm(svc, update.effective_user.id, llm_usage, text[:60])
     context.user_data[K_DESC] = text
     context.user_data[K_TEMPLATE] = template.model_dump()
     await update.effective_message.reply_text(
@@ -198,15 +207,16 @@ async def on_adjust(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return WAIT_ADJUST
     await update.effective_message.reply_text(msg.COMPILING)
     try:
-        template = await svc.compiler.compile(
+        template, llm_usage = await svc.compiler.compile(
             context.user_data.get(K_DESC, ""),
             feedback=feedback,
             previous=_pending_template(context))
     except LLMError as exc:
-        svc.store.record_usage(update.effective_user.id, "llm", 1, detail="failed")
+        _record_llm(svc, update.effective_user.id,
+                    getattr(exc, "usage", {}) or {}, "failed")
         await update.effective_message.reply_text(msg.COMPILE_FAILED.format(err=str(exc)[:300]))
         return WAIT_ADJUST
-    svc.store.record_usage(update.effective_user.id, "llm", 1, detail=feedback[:60])
+    _record_llm(svc, update.effective_user.id, llm_usage, feedback[:60])
     context.user_data[K_TEMPLATE] = template.model_dump()
     await update.effective_message.reply_text(
         msg.TEMPLATE_CONFIRM.format(summary=template_summary(template)),

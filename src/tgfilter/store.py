@@ -53,6 +53,8 @@ CREATE TABLE IF NOT EXISTS usage (
     sub_id INTEGER,
     kind TEXT NOT NULL,
     qty INTEGER NOT NULL DEFAULT 1,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
     detail TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_usage_user_ts ON usage(user_id, ts);
@@ -97,17 +99,25 @@ class Store:
             self._conn.commit()
 
     def _migrate(self) -> None:
-        """旧库平滑升级：补齐 users 表后续新增的列。"""
-        cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(users)")}
+        """旧库平滑升级：补齐后续新增的列。"""
         additions = {
-            "status": "TEXT NOT NULL DEFAULT 'active'",
-            "max_subs": "INTEGER",
-            "quota_jev_monthly": "INTEGER",
-            "note": "TEXT",
+            "users": {
+                "status": "TEXT NOT NULL DEFAULT 'active'",
+                "max_subs": "INTEGER",
+                "quota_jev_monthly": "INTEGER",
+                "note": "TEXT",
+            },
+            "usage": {
+                "input_tokens": "INTEGER NOT NULL DEFAULT 0",
+                "output_tokens": "INTEGER NOT NULL DEFAULT 0",
+            },
         }
-        for name, ddl in additions.items():
-            if name not in cols:
-                self._conn.execute(f"ALTER TABLE users ADD COLUMN {name} {ddl}")
+        for table, columns in additions.items():
+            cols = {row["name"] for row in
+                    self._conn.execute(f"PRAGMA table_info({table})")}
+            for name, ddl in columns.items():
+                if name not in cols:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
     def close(self) -> None:
         with self._lock:
@@ -176,11 +186,15 @@ class Store:
         return int(rows[0]["n"]) if rows else 0
 
     def record_usage(self, user_id: int, kind: str, qty: int = 1,
-                     sub_id: int | None = None, detail: str = "") -> None:
-        """记录一条用量：kind ∈ jev/llm/run/fetch/deliver。"""
+                     sub_id: int | None = None, detail: str = "",
+                     input_tokens: int = 0, output_tokens: int = 0) -> None:
+        """记录一条用量：kind ∈ jev/llm/run/fetch/deliver；token 用量为 API 真实值。"""
         self._run(
-            "INSERT INTO usage(ts, user_id, sub_id, kind, qty, detail) VALUES(?,?,?,?,?,?)",
-            (_now(), user_id, sub_id, kind, max(0, int(qty)), detail[:500] or None))
+            "INSERT INTO usage(ts, user_id, sub_id, kind, qty, input_tokens, output_tokens, detail) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (_now(), user_id, sub_id, kind, max(0, int(qty)),
+             max(0, int(input_tokens)), max(0, int(output_tokens)),
+             detail[:500] or None))
 
     def usage_sum(self, user_id: int | None = None, kind: str | None = None,
                   since: datetime | None = None) -> int:
@@ -197,9 +211,13 @@ class Store:
         rows = self._query(sql, tuple(args))
         return int(rows[0]["s"])
 
-    def usage_by_kind(self, user_id: int | None = None,
-                      since: datetime | None = None) -> dict[str, int]:
-        sql, args = "SELECT kind, COALESCE(SUM(qty),0) AS s FROM usage WHERE 1=1", []
+    def usage_rollup(self, user_id: int | None = None,
+                     since: datetime | None = None) -> dict[str, dict[str, int]]:
+        """按 kind 汇总：{"jev": {"count": n, "in": tokens, "out": tokens}, ...}。"""
+        sql, args = ("SELECT kind, COALESCE(SUM(qty),0) AS s, "
+                     "COALESCE(SUM(input_tokens),0) AS tin, "
+                     "COALESCE(SUM(output_tokens),0) AS tout "
+                     "FROM usage WHERE 1=1"), []
         if user_id is not None:
             sql += " AND user_id=?"
             args.append(user_id)
@@ -207,11 +225,20 @@ class Store:
             sql += " AND ts>=?"
             args.append(since.isoformat())
         sql += " GROUP BY kind"
-        return {row["kind"]: int(row["s"]) for row in self._query(sql, tuple(args))}
+        return {row["kind"]: {"count": int(row["s"]), "in": int(row["tin"]),
+                              "out": int(row["tout"])}
+                for row in self._query(sql, tuple(args))}
+
+    def usage_by_kind(self, user_id: int | None = None,
+                      since: datetime | None = None) -> dict[str, int]:
+        return {kind: item["count"]
+                for kind, item in self.usage_rollup(user_id, since).items()}
 
     def usage_rows(self, since: datetime | None = None) -> list[dict]:
-        """按 (user_id, kind) 汇总，供管理员视图聚合。"""
-        sql, args = ("SELECT user_id, kind, COALESCE(SUM(qty),0) AS s "
+        """按 (user_id, kind) 汇总（含 token），供管理员视图聚合。"""
+        sql, args = ("SELECT user_id, kind, COALESCE(SUM(qty),0) AS s, "
+                     "COALESCE(SUM(input_tokens),0) AS tin, "
+                     "COALESCE(SUM(output_tokens),0) AS tout "
                      "FROM usage WHERE 1=1"), []
         if since is not None:
             sql += " AND ts>=?"

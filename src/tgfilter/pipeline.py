@@ -21,6 +21,8 @@ class RunResult:
     sent: bool = False
     sample: list[tuple[Post, dict]] = field(default_factory=list)
     error: str = ""
+    input_tokens: int = 0    # 本轮 Jev 判定累计（API 返回的真实用量）
+    output_tokens: int = 0
 
 
 class Pipeline:
@@ -52,6 +54,9 @@ class Pipeline:
         results = await self._jev.classify_many([p.text for p in posts], template)
         hits: list[tuple[Post, dict]] = []
         for post, result in zip(posts, results):
+            usage = result.get("usage") or {}
+            res.input_tokens += int(usage.get("input_tokens") or 0)
+            res.output_tokens += int(usage.get("output_tokens") or 0)
             if result.get("error"):
                 res.failed += 1
                 continue
@@ -106,7 +111,9 @@ class Pipeline:
         if not dry:
             judged = max(0, len(used_posts) - res.failed)
             if judged:
-                self._store.record_usage(user_id, "jev", judged, sub_id=sub["id"])
+                self._store.record_usage(
+                    user_id, "jev", judged, sub_id=sub["id"],
+                    input_tokens=res.input_tokens, output_tokens=res.output_tokens)
             if len(used_posts) < len(posts):
                 self._store.log(sub["id"], "quota_truncated",
                                 f"配额将尽，仅判定 {len(used_posts)}/{len(posts)} 条")
@@ -161,7 +168,9 @@ class Pipeline:
         hits = await self._classify_and_select(posts, template, res)
         judged = max(0, len(posts) - res.failed)
         if judged:
-            self._store.record_usage(user_id, "jev", judged, sub_id=sub["id"])
+            self._store.record_usage(
+                user_id, "jev", judged, sub_id=sub["id"],
+                input_tokens=res.input_tokens, output_tokens=res.output_tokens)
         sample_hits = hits[-limit:]  # 最新 limit 条，保持时间顺序
         res.sample = list(reversed(sample_hits))  # DM 展示：最新在前
         if sample_hits:

@@ -10,7 +10,8 @@ from tgfilter.store import Store
 
 
 def _hit(score: float) -> dict:
-    return {"answers": {"china": {"type": "noul", "noul": score}}, "usage": {}}
+    return {"answers": {"china": {"type": "noul", "noul": score}},
+            "usage": {"input_tokens": 40, "output_tokens": 5}}
 
 
 class FakeFetcher:
@@ -165,6 +166,7 @@ async def test_preview_sends_sample_to_destination(tmp_path):
     assert "msg104" in chunks[0] and "msg103" in chunks[0]
     assert "msg100" not in chunks[0]
     assert store.usage_by_kind(user_id=7)["deliver"] == 1
+    assert store.usage_rollup(user_id=7)["jev"]["in"] == 200  # 5 条 × 40
 
 
 async def test_preview_delivery_failure_reported(tmp_path):
@@ -181,13 +183,14 @@ async def test_preview_delivery_failure_reported(tmp_path):
 
 
 async def test_run_records_usage(tmp_path):
-    """正常一轮：run / fetch / jev / deliver 全部入账。"""
+    """正常一轮：run / fetch / jev / deliver 全部入账，jev 含真实 token。"""
     posts = [Post(id=101, text="a", url="u1"), Post(id=102, text="b", url="u2")]
     store, sub, _, _, _, pipeline = _make_env(tmp_path, posts,
                                               {"a": _hit(0.95), "b": _hit(0.1)})
     await pipeline.run(sub)
     counts = store.usage_by_kind(user_id=7)
     assert counts == {"run": 1, "fetch": 1, "jev": 2, "deliver": 1}
+    assert store.usage_rollup(user_id=7)["jev"] == {"count": 2, "in": 80, "out": 10}
 
 
 async def test_run_quota_exhausted_pauses_subscription(tmp_path):

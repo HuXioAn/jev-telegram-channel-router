@@ -22,7 +22,9 @@ _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$")
 
 
 class LLMError(Exception):
-    pass
+    def __init__(self, message: str, usage: dict | None = None):
+        super().__init__(message)
+        self.usage: dict = usage or {}  # 失败前已产生的真实 token 用量
 
 
 _PROMPT_HEAD = """You are the Filter Template Compiler. You convert a user's plain-language description of what they want to catch from Telegram channels into ONE strict JSON document: a reusable "Jev template" that a judgment model (Jev, by TypeSafe) executes against every incoming message.
@@ -171,8 +173,12 @@ class TemplateCompiler:
         self._timeout = 90.0
 
     async def compile(self, description: str, feedback: str | None = None,
-                      previous: Template | None = None) -> Template:
-        """描述（可带调整意见与上一版模板）→ Template。失败抛 LLMError。"""
+                      previous: Template | None = None) -> tuple[Template, dict]:
+        """描述（可带调整意见与上一版模板）→ (Template, usage)。
+
+        usage = {"input_tokens", "output_tokens", "calls"}，为 API 返回的真实
+        用量（含自动修复重试的累计）；失败抛 LLMError（同样带 .usage）。
+        """
         user_parts = [f"User description: {description.strip()}"]
         if previous is not None and feedback:
             user_parts.append(f"Previous template:\n{previous.model_dump_json()}")
@@ -183,6 +189,7 @@ class TemplateCompiler:
         ]
 
         last_error: str | None = None
+        totals = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
         for _ in range(2):  # 原始尝试 + 一次修复重试
             attempt_messages = list(messages)
             if last_error:
@@ -191,15 +198,18 @@ class TemplateCompiler:
                     "content": (f"Your previous output was rejected ({last_error}). "
                                 "Output ONLY the corrected JSON document."),
                 })
-            raw = await self._chat(attempt_messages)
+            raw, tokens = await self._chat(attempt_messages)
+            totals["input_tokens"] += tokens["input_tokens"]
+            totals["output_tokens"] += tokens["output_tokens"]
+            totals["calls"] += 1
             try:
                 data = json.loads(_strip_fences(raw))
-                return Template.model_validate(data)
+                return Template.model_validate(data), totals
             except (json.JSONDecodeError, ValueError) as exc:
                 last_error = str(exc)[:500]
-        raise LLMError(f"模板编译失败：{last_error}")
+        raise LLMError(f"模板编译失败：{last_error}", usage=totals)
 
-    async def _chat(self, messages: list[dict]) -> str:
+    async def _chat(self, messages: list[dict]) -> tuple[str, dict]:
         headers = {"Authorization": f"Bearer {self._api_key}"}
         base: dict = {"model": self._model, "messages": messages}
         # 逐级降级以适配各家 OpenAI 兼容端点：
@@ -222,7 +232,16 @@ class TemplateCompiler:
             if response.status_code != 200:
                 raise LLMError(f"LLM HTTP {response.status_code}: {response.text[:200]}")
             try:
-                return response.json()["choices"][0]["message"]["content"] or ""
+                payload = response.json()
+                content = payload["choices"][0]["message"]["content"] or ""
             except (KeyError, IndexError, TypeError) as exc:
                 raise LLMError(f"LLM 响应结构异常：{exc}") from exc
+            usage = payload.get("usage")
+            usage = usage if isinstance(usage, dict) else {}
+            return content, {
+                "input_tokens": int(usage.get("prompt_tokens")
+                                    or usage.get("input_tokens") or 0),
+                "output_tokens": int(usage.get("completion_tokens")
+                                     or usage.get("output_tokens") or 0),
+            }
         raise LLMError(f"LLM 调用失败（参数降级后仍被拒：{last_error}）")
