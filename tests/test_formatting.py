@@ -69,3 +69,12 @@ def test_compose_digest_hard_split_for_oversized_block():
 
 def test_compose_digest_empty():
     assert compose_digest("chan", 5, [], make_template()) == []
+
+
+def test_compose_digest_test_marker_on_first_chunk_only():
+    hits = [(_post(i, "x" * 900), _answers()) for i in range(1, 4)]
+    chunks = compose_digest("chan", 5, hits, make_template(), chunk_limit=2000,
+                            test=True)
+    assert len(chunks) == 2
+    assert chunks[0].startswith("🧪 试跑样张（非正式推送）")
+    assert "🧪" not in chunks[1]

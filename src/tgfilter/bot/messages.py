@@ -22,7 +22,8 @@ HELP = (
     "二、推送到频道\n"
     "  先把机器人添加为你频道的管理员，再在向导的「目的地」里选择该频道。\n\n"
     "三、先试跑再正式跑\n"
-    "  /test <编号> 会拉取频道最近消息做一次判定演示，不会发送任何消息。\n\n"
+    "  /test <编号> 会拉取频道最近消息做一次判定演示，并把样张（最多 6 条、带 🧪 标头）\n"
+    "  发到订阅的目标，用来核对实际推送效果；不推进游标、不算正式推送。\n\n"
     "注意：\n"
     "· 只支持公开频道的网页预览；若频道关闭了预览则无法抓取；\n"
     "· 只推送订阅之后出现的新消息，停机过久可能漏掉超出预览窗口的消息；\n"
@@ -78,7 +79,7 @@ SUB_CREATED = (
 NO_SUBS = "你还没有订阅。发送 /new 创建一个。"
 TEST_NEED_ID = "你有多个订阅，请指定编号：/test <订阅编号>（用 /list 查看）"
 TEST_SUB_NOT_FOUND = "未找到订阅 #{sub_id}（用 /list 查看你的订阅）。"
-TESTING = "⏳ 正在试跑（拉取最近消息并逐条判定）…"
+TESTING = "⏳ 正在试跑（拉取最近消息逐条判定，样张将发往目标）…"
 CHAT_ADDED = "✅ 已登记频道「{title}」。现在可以在 /new 的目的地列表中选择它。"
 CANCELED = "已取消。"
 ERROR = "⚠️ 出错了：{err}"
@@ -112,6 +113,9 @@ def test_result(res, sub: dict, template) -> str:
         f"🧪 试跑结果（订阅 #{res.sub_id}）",
         f"· 抽样：{res.fetched} 条｜命中：{res.matched} 条｜判定失败：{res.failed} 条",
     ]
+    if res.sent:
+        dest = sub["dest_title"] or str(sub["dest_chat_id"])
+        lines.append(f"· 试跑样张（{len(res.sample)} 条）已发到目标：{dest}")
     if res.error:
         lines.append(f"⚠️ {res.error}")
     if res.sample:

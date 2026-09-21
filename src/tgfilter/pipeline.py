@@ -135,7 +135,7 @@ class Pipeline:
         return res
 
     async def preview(self, sub: dict, pool: int = 120, limit: int = 6) -> RunResult:
-        """试跑：拉最近 pool 条样本判定；不发送、不推进游标。仍计入用量与配额。"""
+        """试跑：拉最近 pool 条样本判定；把样张（最新 limit 条）发到订阅目标；不推进游标。仍计入用量与配额。"""
         res = RunResult(sub_id=sub["id"])
         template = template_of(sub)
         user_id = sub["user_id"]
@@ -162,5 +162,17 @@ class Pipeline:
         judged = max(0, len(posts) - res.failed)
         if judged:
             self._store.record_usage(user_id, "jev", judged, sub_id=sub["id"])
-        res.sample = list(reversed(hits[-limit:]))  # 最新在前
+        sample_hits = hits[-limit:]  # 最新 limit 条，保持时间顺序
+        res.sample = list(reversed(sample_hits))  # DM 展示：最新在前
+        if sample_hits:
+            chunks = formatting.compose_digest(
+                sub["source"], sub["id"], sample_hits, template,
+                self._chunk_limit, test=True)
+            try:
+                await self._sender.send(sub["dest_chat_id"], chunks)
+                res.sent = True
+                self._store.record_usage(user_id, "deliver", len(chunks),
+                                         sub_id=sub["id"], detail="preview")
+            except DeliveryError as exc:
+                res.error = f"样张发送到目标失败：{exc}"
         return res

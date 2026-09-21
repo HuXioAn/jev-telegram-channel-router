@@ -6,6 +6,7 @@ import json
 from .models import Post, Template, format_answer_value
 
 _CHUNK_MARK = "（{i}/{n}）"
+_TEST_MARK = "🧪 试跑样张（非正式推送）\n\n"
 
 
 def _fmt_entry(value: object) -> str:
@@ -54,8 +55,9 @@ def template_summary(template: Template) -> str:
 
 
 def compose_digest(source: str, sub_id: int, hits: list[tuple[Post, dict]],
-                   template: Template, chunk_limit: int = 3800) -> list[str]:
-    """命中列表 → 一条或多条可直接发送的消息文本。"""
+                   template: Template, chunk_limit: int = 3800,
+                   test: bool = False) -> list[str]:
+    """命中列表 → 一条或多条可直接发送的消息文本；test=True 时首条加试跑标头。"""
     if not hits:
         return []
     span = ""
@@ -77,6 +79,8 @@ def compose_digest(source: str, sub_id: int, hits: list[tuple[Post, dict]],
         total = len(chunks)
         chunks = [f"{chunk}\n\n{_CHUNK_MARK.format(i=i, n=total)}"
                   for i, chunk in enumerate(chunks, 1)]
+    if test:
+        chunks[0] = f"{_TEST_MARK}{chunks[0]}"
     return chunks
 
 

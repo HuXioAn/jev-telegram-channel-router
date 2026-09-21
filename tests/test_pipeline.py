@@ -145,17 +145,39 @@ async def test_run_fetch_error(tmp_path):
     assert "boom" in result2.error
 
 
-async def test_preview_returns_latest_samples_first(tmp_path):
+async def test_preview_sends_sample_to_destination(tmp_path):
+    """试跑：样张（最新 limit 条、带 🧪 标头）发到订阅目标；DM 样例最新在前。"""
     head = ChannelInfo(channel="chan", title="t", head_id=105, posts=[])
     posts = [Post(id=i, text=f"msg{i}", url=f"u{i}") for i in range(96, 106)]
     mapping = {f"msg{i}": (_hit(0.9) if i in (103, 104) else _hit(0.1))
                for i in range(96, 106)}
-    _, sub, fetcher, _, sender, pipeline = _make_env(tmp_path, posts, mapping, head=head)
+    store, sub, fetcher, _, sender, pipeline = _make_env(
+        tmp_path, posts, mapping, head=head)
     result = await pipeline.preview(sub, pool=5, limit=2)
     assert result.fetched == 5 and result.matched == 2
     assert [post.id for post, _ in result.sample] == [104, 103]  # 最新在前
-    assert sender.sent == []
     assert fetcher.fetch_calls == [100]
+    # 样张发到目标（dest_chat_id=42），只含最新 2 条
+    assert result.sent is True
+    chat_id, chunks = sender.sent[0]
+    assert chat_id == 42
+    assert chunks[0].startswith("🧪 试跑样张")
+    assert "msg104" in chunks[0] and "msg103" in chunks[0]
+    assert "msg100" not in chunks[0]
+    assert store.usage_by_kind(user_id=7)["deliver"] == 1
+
+
+async def test_preview_delivery_failure_reported(tmp_path):
+    """试跑样张发送失败（如 bot 被移出频道）时在结果里给出提示。"""
+    head = ChannelInfo(channel="chan", title="t", head_id=105, posts=[])
+    posts = [Post(id=i, text=f"msg{i}", url=f"u{i}") for i in range(100, 106)]
+    mapping = {f"msg{i}": _hit(0.9) for i in range(100, 106)}
+    sender = FakeSender(error="forbidden")
+    _, sub, _, _, _, pipeline = _make_env(tmp_path, posts, mapping,
+                                          head=head, sender=sender)
+    result = await pipeline.preview(sub, pool=5, limit=2)
+    assert result.sent is False
+    assert "样张发送到目标失败" in result.error
 
 
 async def test_run_records_usage(tmp_path):
