@@ -89,6 +89,10 @@ FALLBACK = (
     "· /list — 管理订阅\n"
     "· /help — 使用说明"
 )
+PRIVATE_ONLY = "🔒 请在与我的私聊中使用 {cmd}（订阅数据只对你自己可见）。"
+DEST_CHANNEL_NOT_YOURS = (
+    "❌ 无法选择「{title}」：该频道不由你添加，或机器人已不在其中。"
+    "若是你的频道，请先把机器人添加为管理员。")
 
 
 def sub_line(sub: dict, template) -> str:

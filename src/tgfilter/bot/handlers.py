@@ -30,6 +30,20 @@ def _svc(context: ContextTypes.DEFAULT_TYPE):
     return context.application.bot_data["services"]
 
 
+def _require_private(update: Update) -> bool:
+    """私聊专用入口守卫：列表/试跑含用户私有数据，避免在群里泄露。"""
+    chat = update.effective_chat
+    return chat is not None and chat.type == ChatType.PRIVATE
+
+
+def resolve_dest_chat(store, user_id: int, chat_id: int) -> dict | None:
+    """目的地频道归属校验：只有把机器人添加进该频道的人才能选它。"""
+    chat = store.get_chat(chat_id)
+    if chat is None or chat.get("added_by") != user_id:
+        return None
+    return chat
+
+
 def _pending_template(context: ContextTypes.DEFAULT_TYPE) -> Template:
     return Template.model_validate(context.user_data[K_TEMPLATE])
 
@@ -194,7 +208,13 @@ async def on_dest_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data["dest_title"] = "私聊"
     else:
         chat_id = int(data.split(":", 2)[2])
-        chat = svc.store.get_chat(chat_id) or {}
+        chat = resolve_dest_chat(svc.store, user.id, chat_id)
+        if chat is None:
+            title = (svc.store.get_chat(chat_id) or {}).get("title") or str(chat_id)
+            await _edit(query,
+                f"{msg.DEST_CHANNEL_NOT_YOURS.format(title=title)}\n\n{msg.ASK_DEST}",
+                reply_markup=dest_kb(svc.store.list_chats(added_by=user.id)))
+            return WAIT_DEST
         title = chat.get("title") or str(chat_id)
         member = None
         try:
@@ -239,6 +259,9 @@ async def on_interval_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # ---------------------------------------------------------------- 订阅管理
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _require_private(update):
+        await update.effective_message.reply_text(msg.PRIVATE_ONLY.format(cmd="/list"))
+        return
     subs = _svc(context).store.list_subscriptions(user_id=update.effective_user.id)
     if not subs:
         await update.effective_message.reply_text(msg.NO_SUBS)
@@ -274,6 +297,9 @@ async def on_sub_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _require_private(update):
+        await update.effective_message.reply_text(msg.PRIVATE_ONLY.format(cmd="/test"))
+        return
     svc = _svc(context)
     user_id = update.effective_user.id
     args = context.args or []
@@ -332,6 +358,9 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             except TelegramError:
                 pass
     elif status in (ChatMember.LEFT, ChatMember.BANNED):
+        store.remove_chat(chat.id)
+    elif chat.type == ChatType.CHANNEL and status == ChatMember.MEMBER:
+        # 频道内被降权（管理员 → 普通成员）：不能再发帖，从可选目的地移除
         store.remove_chat(chat.id)
 
 

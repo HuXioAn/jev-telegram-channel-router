@@ -8,6 +8,7 @@ from telegram import (Chat, ChatMemberAdministrator, ChatMemberLeft,
                       ChatMemberMember, ChatMemberOwner, ChatMemberUpdated,
                       Message, Update, User)
 
+from conftest import make_template
 from tgfilter.bot import handlers as h
 from tgfilter.store import Store
 
@@ -113,3 +114,42 @@ async def test_plain_text_gets_fallback_hint(tmp_path):
     update.message.set_bot(bot)
     await h.on_plain_text(update, context)
     assert bot.sent and "还没学会" in bot.sent[0][1]
+
+
+def _group_update(text: str = "/list") -> Update:
+    return Update(update_id=3, message=Message(
+        message_id=11, date=datetime.now(timezone.utc),
+        chat=Chat(id=-1001234567890, type="supergroup"),
+        from_user=User(id=USER_ID, first_name="Anton", is_bot=False), text=text))
+
+
+def test_resolve_dest_chat_only_for_owner(tmp_path):
+    """目的地频道归属校验：非添加者不可选（多用户隔离）。"""
+    store, bot, context = _make(tmp_path)
+    store.upsert_chat(CHAT_ID, "channel", "测试频道", USER_ID)
+    assert h.resolve_dest_chat(store, USER_ID, CHAT_ID)["title"] == "测试频道"
+    assert h.resolve_dest_chat(store, USER_ID + 1, CHAT_ID) is None
+    assert h.resolve_dest_chat(store, USER_ID, CHAT_ID + 999) is None
+
+
+async def test_group_commands_refuse_private_data(tmp_path):
+    """群里执行 /list：只提示去私聊，不泄露任何订阅数据。"""
+    store, bot, context = _make(tmp_path)
+    store.add_subscription(user_id=USER_ID, source="chan", template=make_template(),
+                           dest_kind="dm", dest_chat_id=USER_ID, dest_title="私聊",
+                           interval_minutes=20, last_seen_id=1)
+    update = _group_update()
+    update.message.set_bot(bot)
+    await h.cmd_list(update, context)
+    assert bot.sent and "私聊" in bot.sent[0][1]
+    assert all("chan" not in text for _, text in bot.sent)
+
+
+async def test_channel_demotion_removes_registration(tmp_path):
+    """频道内被降权（管理员 → 普通成员）时移除登记，目的地列表不留脏项。"""
+    store, bot, context = _make(tmp_path)
+    await h.on_my_chat_member(_member_update("channel", _admin()), context)
+    assert store.get_chat(CHAT_ID) is not None
+    await h.on_my_chat_member(
+        _member_update("channel", ChatMemberMember(user=_bot_user())), context)
+    assert store.get_chat(CHAT_ID) is None
