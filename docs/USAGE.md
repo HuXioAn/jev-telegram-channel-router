@@ -114,6 +114,8 @@ token counts returned by the APIs**:
 
 - **No conversational replies** — status and results only; unknown text/commands get
   a fixed hint.
+- **No link previews** — messages carry links but never sprout a preview box
+  (link previews are disabled instance-wide via `Defaults`).
 - **Implicit union judging** — one judgment per post serves every subscription on the
   channel (union questions + cache + per-template projection), across users; users
   neither see nor configure it.

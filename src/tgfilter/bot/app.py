@@ -6,11 +6,13 @@ import logging
 from datetime import datetime, timezone
 
 import httpx
-from telegram import Bot, BotCommand, BotCommandScopeChat, Update
+from telegram import (Bot, BotCommand, BotCommandScopeChat, LinkPreviewOptions,
+                      Update)
 from telegram.error import TelegramError
 from telegram.ext import (Application, ApplicationBuilder, BaseUpdateProcessor,
                           CallbackQueryHandler, ChatMemberHandler, CommandHandler,
-                          ConversationHandler, MessageHandler, TypeHandler, filters)
+                          ConversationHandler, Defaults, MessageHandler, TypeHandler,
+                          filters)
 
 from .. import i18n
 from ..channel_fetch import ChannelFetcher
@@ -163,7 +165,11 @@ def build_application(settings: Settings) -> Application:
         if http is not None:
             await http.aclose()
 
+    # Link previews off instance-wide (every send/edit): pushes carry links and
+    # must not sprout a preview box below the text.
     app = (ApplicationBuilder().token(settings.bot_token)
+           .defaults(Defaults(
+               link_preview_options=LinkPreviewOptions(is_disabled=True)))
            .concurrent_updates(PerChatUpdateProcessor(CONCURRENT_UPDATES))
            .post_init(post_init)
            .post_shutdown(post_shutdown)

@@ -50,3 +50,14 @@ async def test_different_chats_run_concurrently():
         proc.process_update(_upd(2, 300), job("d", 0.01)),
     )
     assert ran == ["c-start", "d-start", "d-end", "c-end"]
+
+
+def test_build_application_disables_link_previews():
+    """Link previews are disabled instance-wide (Defaults): messages with links
+    must not sprout a preview box below the text."""
+    from tgfilter.bot.app import build_application
+    from tgfilter.config import Settings
+
+    app = build_application(Settings(bot_token="123456789:" + "A" * 30))
+    options = app.bot.defaults.link_preview_options
+    assert options is not None and options.is_disabled is True
