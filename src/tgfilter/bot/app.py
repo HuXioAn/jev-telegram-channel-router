@@ -112,9 +112,10 @@ async def _tick(context) -> None:
     """Scan for due source channels once a minute; each runs as its own task."""
     services: Services = context.application.bot_data["services"]
     store = services.store
-    store.sync_watches(services.settings.default_interval_minutes)
+    store.sync_watches()
     store.prune_judgments()
-    for watch in store.due_watches(datetime.now(timezone.utc)):
+    interval = store.fetch_interval_minutes(services.settings.default_interval_minutes)
+    for watch in store.due_watches(datetime.now(timezone.utc), interval):
         channel = watch["channel"]
         if channel in _running:
             continue

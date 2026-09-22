@@ -535,8 +535,8 @@ async def _finish_new(query, context: ContextTypes.DEFAULT_TYPE, svc: Services,
                       user, lang: str) -> int:
     """Wizard finale: sources + targets complete → create the subscription.
 
-    Refresh cadence is owned by the channel-level scheduler, so no interval is
-    asked here.
+    Refresh cadence is one global schedule owned by the admin (/admin interval),
+    so no interval is asked here.
     """
     cap = (svc.store.get_user(user.id) or {}).get("max_subs") or MAX_SUBS_PER_USER
     if len(svc.store.list_subscriptions(user_id=user.id)) >= cap:
@@ -550,7 +550,6 @@ async def _finish_new(query, context: ContextTypes.DEFAULT_TYPE, svc: Services,
     template = _pending_template(context)
     sub_id = svc.store.add_subscription(
         user_id=user.id, template=template,
-        interval_minutes=svc.settings.default_interval_minutes,
         sources=[{"source": item["source"], "last_seen_id": item.get("head_id")}
                  for item in sources],
         dests=dests)

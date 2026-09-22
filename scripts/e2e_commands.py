@@ -300,7 +300,7 @@ async def main() -> None:
                         s["enabled"])
                        for s in store.list_subscriptions(user_id=user_id)])
         print("  频道:", store.list_chats())
-        print("  调度:", [(w["channel"], w["interval_minutes"], w["last_seen_id"])
+        print("  调度:", [(w["channel"], w["last_seen_id"])
                         for w in store.list_watches()])
     finally:
         ExtBot.send_message, ExtBot.edit_message_text = original_send, original_edit

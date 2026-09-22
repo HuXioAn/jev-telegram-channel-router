@@ -59,7 +59,7 @@ async def test_admin_overview_and_users(tmp_path):
     store.add_user(USER_ID, "u1")
     store.add_subscription(user_id=USER_ID, source="c", template=make_template(),
                            dest_kind="dm", dest_chat_id=USER_ID, dest_title="私聊",
-                           interval_minutes=20, last_seen_id=1)
+                           last_seen_id=1)
     store.record_usage(USER_ID, "jev", 4)
     text = await _run(context, ADMIN_ID, [])
     assert "管理员总览" in text and "Jev判定 4" in text
@@ -72,7 +72,7 @@ async def test_admin_block_pauses_subs_and_notifies(tmp_path):
     store.add_user(USER_ID, "u1")
     sub_id = store.add_subscription(user_id=USER_ID, source="c", template=make_template(),
                                     dest_kind="dm", dest_chat_id=USER_ID, dest_title="私聊",
-                                    interval_minutes=20, last_seen_id=1)
+                                    last_seen_id=1)
     text = await _run(context, ADMIN_ID, ["block", str(USER_ID)])
     assert "已停用" in text
     assert store.get_user(USER_ID)["status"] == "blocked"
@@ -100,22 +100,25 @@ async def test_admin_quota_and_user_detail(tmp_path):
     assert "配额" in text and "本月判定已消费：4 / 50" in text and "判定消费 4" in text
 
 
-async def test_admin_watches_and_watch_interval(tmp_path):
-    """Channel scheduling admin: view the refresh list, adjust one channel's interval."""
+async def test_admin_watches_and_global_interval(tmp_path):
+    """Channel scheduling admin: view the refresh list; one global interval for all channels."""
     store, _, context = _make(tmp_path)
     store.add_subscription(user_id=USER_ID, source="chan", template=make_template(),
                            dest_kind="dm", dest_chat_id=USER_ID, dest_title="私聊",
-                           interval_minutes=20, last_seen_id=100)
-    store.sync_watches(20)
+                           last_seen_id=100)
+    store.sync_watches()
     text = await _run(context, ADMIN_ID, ["watches"])
-    assert "@chan" in text and "每 20 分钟" in text and "游标 100" in text
+    assert "@chan" in text and "游标 100" in text and "每 20 分钟" in text
 
-    text = await _run(context, ADMIN_ID, ["watch", "@chan", "7"])
-    assert "7" in text
-    assert store.get_watch("chan")["interval_minutes"] == 7
+    text = await _run(context, ADMIN_ID, ["interval", "7"])
+    assert "每 7 分钟" in text
+    assert store.fetch_interval_minutes(20) == 7
 
-    text = await _run(context, ADMIN_ID, ["watch", "nope", "5"])
-    assert "没有在观察" in text
+    text = await _run(context, ADMIN_ID, ["interval"])
+    assert "每 7 分钟" in text
+
+    text = await _run(context, ADMIN_ID, ["interval", "abc"])
+    assert "参数错误" in text
 
 
 async def test_admin_bad_args_reports_help(tmp_path):

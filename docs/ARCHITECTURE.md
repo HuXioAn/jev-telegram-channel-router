@@ -82,8 +82,8 @@ real posts by `scripts/shadow_union.py`.
   subscriptions into the `watches` table (idempotent; a new channel's cursor
   starts at the minimum cursor among its subscriptions).
 - A repeating job ticks every 60 s, materializes, prunes expired judgments and
-  picks `due_watches()` — channels whose `interval_minutes` (min across their
-  subscriptions; admin-adjustable via `/admin watch`) have elapsed.
+  picks `due_watches()` — channels not fetched within the single global refresh
+  interval (admin-adjustable via `/admin interval <minutes>`).
 - Each due channel runs as its own task; `_running` prevents overlap per
   channel. All other users proceed in parallel.
 - Two cursors decouple timing: the **fetch cursor** (per channel) follows new
@@ -101,7 +101,7 @@ lock in `store.py`. Tables:
 | `users` | status (active/blocked), per-user caps/quotas, note, UI language |
 | `chats` | known channels/groups with owner (`added_by`) — the basis of destination validation |
 | `subscriptions` | template JSON, sources + consume cursors, destinations, enabled flag |
-| `watches` | one row per source channel: fetch cursor, interval, last fetch |
+| `watches` | one row per source channel: fetch cursor, last fetch |
 | `judgments` | (channel, post_id, template fingerprint) → answers JSON, `created_at` (7-day TTL) |
 | `logs` | operational events (`delivered`, `classify_failed`, `delivery_error`, `quota_exhausted`, …) |
 | `usage` | one row per metered item: kind, user, sub, counts, real input/output tokens, detail |

@@ -95,10 +95,9 @@ class FakeSender:
 
 
 def _sub(store: Store, user_id: int, chat_id: int, cursor: int | None = 100,
-         source: str = "chan", template=None, interval: int = 20) -> int:
+         source: str = "chan", template=None) -> int:
     return store.add_subscription(
         user_id=user_id, template=template or make_template(),
-        interval_minutes=interval,
         sources=[{"source": source, "last_seen_id": cursor}],
         dests=[{"kind": "dm", "chat_id": chat_id, "title": "私聊"}])
 
@@ -111,7 +110,7 @@ def _cursor(store: Store, sub_id: int) -> int | None:
 async def test_run_watch_sends_hits_and_advances(tmp_path):
     store = Store(str(tmp_path / "t.db"))
     sub_id = _sub(store, 7, 42)
-    store.sync_watches(20)
+    store.sync_watches()
     watch = store.get_watch("chan")
     assert watch["last_seen_id"] == 100
     posts = [Post(id=101, text="hello", url="u1"), Post(id=102, text="world", url="u2")]
@@ -140,7 +139,7 @@ async def test_run_watch_two_templates_one_call_per_post(tmp_path):
     a = _sub(store, 7, 42, template=make_tpl(name="中国"))
     b = _sub(store, 8, 43, template=make_tpl(name="加密", qid="crypto",
                                              instructions=CRYPTO))
-    store.sync_watches(20)
+    store.sync_watches()
     posts = [Post(id=101, text="hello", url="u1"), Post(id=102, text="world", url="u2")]
     jev = FakeJev({"hello": {CHINA: 0.95, CRYPTO: 0.1},
                    "world": {CHINA: 0.1, CRYPTO: 0.9}})
@@ -164,7 +163,7 @@ async def test_run_watch_question_dedup_across_templates(tmp_path):
     store = Store(str(tmp_path / "t.db"))
     _sub(store, 7, 42, template=make_tpl(name="严", threshold=0.7))
     _sub(store, 8, 43, template=make_tpl(name="宽", threshold=0.5))
-    store.sync_watches(20)
+    store.sync_watches()
     posts = [Post(id=101, text="hello", url="u1")]
     jev = FakeJev({"hello": {CHINA: 0.6}})
     pipeline = Pipeline(store, FakeFetcher({"chan": posts}), jev, FakeSender())
@@ -178,7 +177,7 @@ async def test_run_watch_template_edit_affects_new_posts(tmp_path):
     """Template edit (question set changes → new fingerprint): new messages are judged and routed with the new template."""
     store = Store(str(tmp_path / "t.db"))
     sub_id = _sub(store, 7, 42)
-    store.sync_watches(20)
+    store.sync_watches()
     posts = [Post(id=101, text="a", url="u1")]
     jev = FakeJev({"a": {CHINA: 0.9}})
     sender = FakeSender()
@@ -204,7 +203,7 @@ async def test_run_watch_laggard_sub_gets_backlog(tmp_path):
     store = Store(str(tmp_path / "b.db"))
     a = _sub(store, 7, 42, cursor=100)
     b = _sub(store, 8, 43, cursor=200)
-    store.sync_watches(20)
+    store.sync_watches()
     assert store.get_watch("chan")["last_seen_id"] == 100   # materialization takes the minimum subscription cursor
     posts = [Post(id=i, text=f"m{i}", url=f"u{i}") for i in range(195, 206)]
     jev = FakeJev({f"m{i}": {CHINA: 0.9} for i in range(195, 206)})
@@ -227,7 +226,7 @@ async def test_run_watch_rerun_is_free_and_idempotent(tmp_path):
     """Judgment cache + consumption cursor: rerunning after a fetch-cursor rollback calls neither Jev again nor delivers again."""
     store = Store(str(tmp_path / "t.db"))
     _sub(store, 7, 42)
-    store.sync_watches(20)
+    store.sync_watches()
     posts = [Post(id=101, text="hello", url="u1")]
     jev = FakeJev({"hello": {CHINA: 0.9}})
     sender = FakeSender()
@@ -246,7 +245,7 @@ async def test_run_watch_rerun_is_free_and_idempotent(tmp_path):
 async def test_run_watch_no_new_posts(tmp_path):
     store = Store(str(tmp_path / "t.db"))
     _sub(store, 7, 42)
-    store.sync_watches(20)
+    store.sync_watches()
     jev = FakeJev({})
     pipeline = Pipeline(store, FakeFetcher({"chan": []}), jev, FakeSender())
 
@@ -261,7 +260,7 @@ async def test_run_watch_seeds_cursor_from_head(tmp_path):
     """A newly created channel has no cursor when first materialized: seed the head only, do not fetch history."""
     store = Store(str(tmp_path / "t.db"))
     _sub(store, 7, 42, cursor=None)
-    store.sync_watches(20)
+    store.sync_watches()
     assert store.get_watch("chan")["last_seen_id"] is None
     head = ChannelInfo(channel="chan", title="t", head_id=555, posts=[])
     fetcher = FakeFetcher(head=head)
@@ -280,7 +279,7 @@ async def test_run_watch_fetch_error_marks_fetched(tmp_path):
     """Fetch failure: log the error, update last_fetch_at (so it is not retried every minute), leave the cursor alone."""
     store = Store(str(tmp_path / "t.db"))
     _sub(store, 7, 42)
-    store.sync_watches(20)
+    store.sync_watches()
     fetcher = FakeFetcher(fetch_errors={"chan"})
     pipeline = Pipeline(store, fetcher, FakeJev({}), FakeSender())
 
@@ -295,7 +294,7 @@ async def test_run_watch_classify_failure_skips_but_advances(tmp_path):
     posts = [Post(id=101, text="a", url="u1"), Post(id=102, text="b", url="u2")]
     store = Store(str(tmp_path / "t.db"))
     sub_id = _sub(store, 7, 42)
-    store.sync_watches(20)
+    store.sync_watches()
     jev = FakeJev({"b": {CHINA: 0.1}}, errors={"a"})
     sender = FakeSender()
     pipeline = Pipeline(store, FakeFetcher({"chan": posts}), jev, sender)
@@ -319,11 +318,11 @@ async def test_run_watch_multi_dest_partial_failure(tmp_path):
 
     store = Store(str(tmp_path / "t.db"))
     store.add_subscription(
-        user_id=7, template=make_template(), interval_minutes=20,
+        user_id=7, template=make_template(),
         sources=[{"source": "chan", "last_seen_id": 100}],
         dests=[{"kind": "dm", "chat_id": 42, "title": "私聊"},
                {"kind": "channel", "chat_id": -1005, "title": "测试频道"}])
-    store.sync_watches(20)
+    store.sync_watches()
     posts = [Post(id=101, text="hello", url="u1")]
     pipeline = Pipeline(store, FakeFetcher({"chan": posts}),
                         FakeJev({"hello": {CHINA: 0.9}}), FlakySender(),
@@ -342,7 +341,7 @@ async def test_run_watch_quota_exhausted_pauses_after_batch(tmp_path):
     store = Store(str(tmp_path / "t.db"))
     store.add_user(7)
     sub_id = _sub(store, 7, 42)
-    store.sync_watches(20)
+    store.sync_watches()
     store.record_usage(7, "consumed", 2)
     store.set_user_fields(7, quota_jev_monthly=3)
     posts = [Post(id=101, text="a", url="u1"), Post(id=102, text="b", url="u2")]

@@ -9,8 +9,8 @@ admin commands, metering, and constraints.
   more destinations (your DM and/or channels you administer).
 - Each source keeps its own **consume cursor**: a new subscription backfills from
   the moment it is created, existing ones never double-read.
-- Refresh cadence is scheduled system-wide (per source channel); subscriptions do
-  not configure intervals. Admins tune them per channel with `/admin watch`.
+- Refresh cadence is one global schedule for every source channel; subscriptions
+  do not configure intervals. Admins set it with `/admin interval <minutes>`.
 
 ## Templates (JSON)
 
@@ -75,8 +75,8 @@ command menu):
 | `/admin users [n]` | User list with status, subscription count, 30-day usage |
 | `/admin user <id>` | Detail: quota, month-to-date consumption + tokens, subscriptions, recent events |
 | `/admin usage [days]` | Per-user usage summary (default 30 days) |
-| `/admin watches` | Channel refresh schedule: interval / cursor / watchers / last fetch |
-| `/admin watch <channel> <minutes>` | Set a channel's refresh interval |
+| `/admin watches` | Channel refresh schedule: cursor / watchers / last fetch |
+| `/admin interval <minutes>` | Set the global refresh interval for all channels (1–1440) |
 | `/admin lang <en\|zh>` | Instance default UI language |
 | `/admin block <id>` / `unblock <id>` | Suspend / restore (auto-pauses subscriptions, notifies the user) |
 | `/admin quota <id> sub <n>` | Subscription cap (0 = default 20) |

@@ -69,7 +69,7 @@ Telegram user ──/new wizard──┐
 
 - `users(id PK, username, status, max_subs, quota_jev_monthly, note, created_at)`
 - `chats(chat_id PK, kind, title, added_by, added_at)` — channels/groups the bot has been added to and can post in (from `my_chat_member` updates)
-- `subscriptions(id PK, user_id, template_json, interval_minutes, enabled, last_run_at, created_at)` — the subscription itself (**n sources → m destinations**)
+- `subscriptions(id PK, user_id, template_json, enabled, last_run_at, created_at)` — the subscription itself (**n sources → m destinations**)
 - `sub_sources(id PK, sub_id, source, last_seen_id, UNIQUE(sub_id, source))` — source channels; each has its own cursor, advanced independently
 - `sub_dests(id PK, sub_id, kind[dm|channel], chat_id, title, UNIQUE(sub_id, chat_id))` — destination list (DMs/channels can be mixed)
 - `logs(id PK, sub_id, ts, kind, detail)` — run records/delivery results (debugging and auditing)
@@ -155,9 +155,9 @@ Other commands: `/list` (subscription management: pause/resume/trial run/edit/de
 
 ### Core Model: Two-Level Cursors
 1) Watch (channel-level, shared across users)
-   - `watches(channel PK, last_seen_id, interval_minutes, last_fetch_at)`
+   - `watches(channel PK, last_seen_id, last_fetch_at)`
    - The set = the union of the source channels of all enabled subscriptions; idempotently materialized on each tick (`sync_watches`); retired once it has no watchers.
-   - Refresh interval: at materialization time, take the minimum of that channel's subscription intervals; admins can change it (default 20 minutes).
+   - Refresh interval: one global interval for all channels (`settings.fetch_interval_minutes`, boot default `DEFAULT_INTERVAL_MINUTES`); admins change it at runtime with `/admin interval <minutes>`.
    - `last_seen_id` is the "fetch cursor": how far that channel has been fetched and judged.
 2) Route (subscription-level, private)
    - `sub_sources.last_seen_id` is repurposed semantically as the "consumption cursor": this subscription's consumption/delivery progress for that channel's messages.
@@ -185,8 +185,8 @@ advance the consumption cursor; finally advance the watch cursor.
 
 ### Data Model Changes
 - Add two tables, `watches` and `judgments` (judgments are periodically cleaned up with a 7-day TTL).
-- Migration: materialize watches (cursor = the minimum of that channel's subscription cursors → guarantees no messages are lost; interval = the minimum subscription interval);
-  the subscriptions' `interval_minutes` column is kept but deprecated (no longer appears in the UI; new subscriptions write the default value).
+- Migration: materialize watches (cursor = the minimum of that channel's subscription cursors → guarantees no messages are lost);
+  the per-channel / per-subscription `interval_minutes` columns are dropped — one global interval replaces them (`settings.fetch_interval_minutes`).
 - usage gains kind=`consumed` (messages consumed by the user); channel-level jev rows use user_id=0.
 
 ### Module Breakdown
@@ -195,11 +195,11 @@ advance the consumption cursor; finally advance the watch cursor.
 - `bot/app.py`: the tick scans due watches; the concurrency key = channel.
 - `bot/`: the wizard drops the frequency step; the edit menu drops the frequency item; lists/details drop the interval display;
   `/admin` gains watches management.
-- `config.py`: `default_interval_minutes=20` (default channel refresh interval), `judge_max_questions=24`.
+- `config.py`: `default_interval_minutes=20` (boot default for the global refresh interval; `/admin interval` overrides it at runtime), `judge_max_questions=24`.
 
 ### User-Visible Changes
 - `/new` no longer asks for a frequency; items no longer show "every N minutes"; the edit menu drops "⏱ Frequency".
-- Push timeliness follows the channel refresh interval (the financial news digest channel measured at the previous 10-minute level is preserved; the rest follow the minimum interval of their sources).
+- Push timeliness follows the single global refresh interval (admin-configurable with `/admin interval`).
 - Filtering, destinations, trial runs, push format, and the rest of subscription management are completely unchanged; the merge itself is invisible to users.
 
 ### Test Strategy

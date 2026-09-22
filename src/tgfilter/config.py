@@ -44,7 +44,6 @@ class Settings:
     openai_model: str = "gpt-4o-mini"
     db_path: str = "data/tgfilter.db"
     default_interval_minutes: int = 20
-    min_interval_minutes: int = 5
     jev_concurrency: int = 8
     http_timeout: float = 30.0
     fetch_page_delay: float = 0.6
@@ -66,7 +65,6 @@ class Settings:
             db_path=_env("DB_PATH", "data/tgfilter.db"),
             default_interval_minutes=_int("DEFAULT_INTERVAL_MINUTES", 20),
             judge_max_questions=_int("JUDGE_MAX_QUESTIONS", 24),
-            min_interval_minutes=_int("MIN_INTERVAL_MINUTES", 5),
             jev_concurrency=_int("JEV_CONCURRENCY", 8),
             http_timeout=_float("HTTP_TIMEOUT", 30.0),
             fetch_page_delay=_float("FETCH_PAGE_DELAY", 0.6),

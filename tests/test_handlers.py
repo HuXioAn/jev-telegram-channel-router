@@ -187,7 +187,7 @@ async def test_group_commands_refuse_private_data(tmp_path):
     store, bot, context = _make(tmp_path)
     store.add_subscription(user_id=USER_ID, source="chan", template=make_template(),
                            dest_kind="dm", dest_chat_id=USER_ID, dest_title="私聊",
-                           interval_minutes=20, last_seen_id=1)
+                           last_seen_id=1)
     update = _group_update()
     update.message.set_bot(bot)
     await h.cmd_list(update, context)
@@ -269,7 +269,7 @@ async def test_subscription_cap_per_user(tmp_path):
     for index in range(h.MAX_SUBS_PER_USER):
         store.add_subscription(user_id=USER_ID, source=f"c{index}", template=template,
                                dest_kind="dm", dest_chat_id=USER_ID, dest_title="私聊",
-                               interval_minutes=20, last_seen_id=1)
+                               last_seen_id=1)
     context.user_data["sources"] = [{"source": "chan_new", "head_id": 500}]
     context.user_data["dests"] = [{"kind": "dm", "chat_id": USER_ID, "title": "私聊"}]
     context.user_data[h.K_TEMPLATE] = template.model_dump()
@@ -304,7 +304,7 @@ def _kb_datas(markup) -> list[str]:
 def _quick_sub(store, name: str, title: str = "私聊", kind: str = "dm",
                chat_id: int = USER_ID) -> int:
     return store.add_subscription(user_id=USER_ID, source=name, template=make_template(),
-                                  interval_minutes=20, dest_kind=kind,
+                                  dest_kind=kind,
                                   dest_chat_id=chat_id, dest_title=title,
                                   last_seen_id=1)
 
@@ -351,7 +351,7 @@ async def test_sub_pick_rejects_foreign_subscription(tmp_path):
     """Picking someone else's subscription id → handled as not found."""
     store, bot, context = _make(tmp_path)
     sub_id = store.add_subscription(user_id=USER_ID + 1, source="chan_x",
-                                    template=make_template(), interval_minutes=20,
+                                    template=make_template(),
                                     dest_kind="dm", dest_chat_id=USER_ID + 1,
                                     dest_title="私聊", last_seen_id=1)
     update = _cb_update(f"sub:open:{sub_id}")
@@ -390,7 +390,7 @@ def _edit_env(tmp_path):
     """An existing subscription with 1 source and 1 DM destination, for the edit-flow tests."""
     store, bot, context = _make(tmp_path)
     sub_id = store.add_subscription(
-        user_id=USER_ID, template=make_template(), interval_minutes=20,
+        user_id=USER_ID, template=make_template(),
         sources=[{"source": "chan_a", "last_seen_id": 100}],
         dests=[{"kind": "dm", "chat_id": USER_ID, "title": "私聊"}])
     return store, bot, context, sub_id
@@ -440,7 +440,7 @@ async def test_create_flow_multi_sources_and_dests(tmp_path):
     assert [s["source"] for s in sub["sources"]] == ["chan_a", "chan_b"]
     assert [s["last_seen_id"] for s in sub["sources"]] == [500, 500]  # start from the head
     assert [d["chat_id"] for d in sub["dests"]] == [CHAT_ID, USER_ID]
-    assert sub["interval_minutes"] == services.settings.default_interval_minutes
+    assert "interval_minutes" not in sub  # refresh cadence is one global schedule
     assert sub["enabled"] == 1
     assert any("已创建" in text for text in bot.edited)
 

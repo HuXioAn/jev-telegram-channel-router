@@ -65,7 +65,7 @@ Telegram 用户 ──/new 向导──┐
 
 - `users(id PK, username, status, max_subs, quota_jev_monthly, note, created_at)`
 - `chats(chat_id PK, kind, title, added_by, added_at)` — 机器人被加入且可发言的频道/群（来自 my_chat_member 更新）
-- `subscriptions(id PK, user_id, template_json, interval_minutes, enabled, last_run_at, created_at)` — 订阅本体（**n 源 → m 目的地**）
+- `subscriptions(id PK, user_id, template_json, enabled, last_run_at, created_at)` — 订阅本体（**n 源 → m 目的地**）
 - `sub_sources(id PK, sub_id, source, last_seen_id, UNIQUE(sub_id, source))` — 源频道；每条独立游标，独立推进
 - `sub_dests(id PK, sub_id, kind[dm|channel], chat_id, title, UNIQUE(sub_id, chat_id))` — 目的地列表（私聊/频道可混）
 - `logs(id PK, sub_id, ts, kind, detail)` — 运行记录/投递结果（调试与审计）
@@ -151,9 +151,9 @@ Telegram 用户 ──/new 向导──┐
 
 ### 核心模型：两层游标
 1) Watch（频道级、跨用户共享）
-   - `watches(channel PK, last_seen_id, interval_minutes, last_fetch_at)`
+   - `watches(channel PK, last_seen_id, last_fetch_at)`
    - 集合 = 所有 enabled 订阅的源频道并集；每 tick 幂等物化（sync_watches），无观察者则退役。
-   - 刷新间隔：物化时取该频道订阅间隔的最小值；管理员可改（默认 20 分钟）。
+   - 刷新间隔：全局统一一个间隔（`settings.fetch_interval_minutes`，启动默认 `DEFAULT_INTERVAL_MINUTES`），管理员用 `/admin interval <分钟>` 运行时修改。
    - last_seen_id 为「抓取游标」：该频道已被抓取并判定的进度。
 2) Route（订阅级、私有）
    - `sub_sources.last_seen_id` 语义调整为「消费游标」：该订阅对该频道消息的消费/投递进度。
@@ -180,7 +180,7 @@ Telegram 用户 ──/new 向导──┐
 ### 数据模型变更
 - 新增 `watches`、`judgments` 两表（judgments 按 7 天 TTL 定期清理）。
 - 迁移：物化 watches（游标=该频道订阅游标最小值 → 保证不丢消息；间隔=订阅间隔最小值）；
-  订阅 `interval_minutes` 列保留但弃用（不再出现于 UI，新订阅写默认值）。
+  订阅与 watches 的 `interval_minutes` 列删除（由单一全局间隔取代）。
 - usage 新增 kind=`consumed`（用户消费条数）；频道级 jev 行为 user_id=0。
 
 ### 模块划分
@@ -189,11 +189,11 @@ Telegram 用户 ──/new 向导──┐
 - `bot/app.py`：tick 扫描到期 watches；并发键=频道。
 - `bot/`：向导去掉频率步骤；编辑菜单去掉频率项；列表/详情去掉间隔展示；
   `/admin` 新增 watches 管理。
-- `config.py`：`default_interval_minutes=20`（频道刷新默认间隔）、`judge_max_questions=24`。
+- `config.py`：`default_interval_minutes=20`（全局刷新间隔启动默认值，运行时 `/admin interval` 可改）、`judge_max_questions=24`。
 
 ### 用户可见变化
 - `/new` 不再询问频率；条目不再显示"每 N 分钟"；编辑菜单去掉「⏱ 频率」。
-- 推送时效跟随频道刷新间隔（财经慢报实测原 10 分钟级保持；其余按各源最小间隔）。
+- 推送时效跟随全局刷新间隔（管理员用 `/admin interval` 配置）。
 - 筛选、目的地、试跑、推送格式、订阅管理其余部分完全不变；合并本身对用户不可见。
 
 ### 测试策略

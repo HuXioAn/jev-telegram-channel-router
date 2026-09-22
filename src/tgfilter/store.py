@@ -32,7 +32,6 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
     template_json TEXT NOT NULL,
-    interval_minutes INTEGER NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
     last_run_at TEXT,
     created_at TEXT NOT NULL
@@ -57,7 +56,6 @@ CREATE INDEX IF NOT EXISTS idx_sub_dests ON sub_dests(sub_id);
 CREATE TABLE IF NOT EXISTS watches (
     channel TEXT PRIMARY KEY,
     last_seen_id INTEGER,
-    interval_minutes INTEGER NOT NULL,
     last_fetch_at TEXT
 );
 CREATE TABLE IF NOT EXISTS judgments (
@@ -130,7 +128,7 @@ class Store:
             self._migrate()
             self._conn.commit()
         # Uniform for old and new databases: materialize the source channels of enabled subscriptions into watches (idempotent, only adds new ones)
-        self.sync_watches(20)
+        self.sync_watches()
 
     def _migrate(self) -> None:
         """Smooth upgrade of old databases: backfill columns added later."""
@@ -160,9 +158,9 @@ class Store:
             self._conn.execute("ALTER TABLE subscriptions RENAME TO subscriptions_old")
             self._conn.executescript(_SCHEMA)
             self._conn.execute(
-                "INSERT INTO subscriptions(id, user_id, template_json, interval_minutes,"
+                "INSERT INTO subscriptions(id, user_id, template_json,"
                 " enabled, last_run_at, created_at) "
-                "SELECT id, user_id, template_json, interval_minutes, enabled,"
+                "SELECT id, user_id, template_json, enabled,"
                 " last_run_at, created_at FROM subscriptions_old")
             self._conn.execute(
                 "INSERT OR IGNORE INTO sub_sources(sub_id, source, last_seen_id) "
@@ -171,6 +169,21 @@ class Store:
                 "INSERT OR IGNORE INTO sub_dests(sub_id, kind, chat_id, title) "
                 "SELECT id, dest_kind, dest_chat_id, dest_title FROM subscriptions_old")
             self._conn.execute("DROP TABLE subscriptions_old")
+        # Per-channel / per-subscription refresh intervals were replaced by one
+        # global interval (settings.fetch_interval_minutes): rebuild both tables.
+        for table, copy_cols in (
+                ("subscriptions",
+                 "id, user_id, template_json, enabled, last_run_at, created_at"),
+                ("watches", "channel, last_seen_id, last_fetch_at")):
+            cols = {row["name"] for row in
+                    self._conn.execute(f"PRAGMA table_info({table})")}
+            if "interval_minutes" not in cols:
+                continue
+            self._conn.execute(f"ALTER TABLE {table} RENAME TO {table}_old")
+            self._conn.executescript(_SCHEMA)
+            self._conn.execute(
+                f"INSERT INTO {table}({copy_cols}) SELECT {copy_cols} FROM {table}_old")
+            self._conn.execute(f"DROP TABLE {table}_old")
 
     def close(self) -> None:
         with self._lock:
@@ -215,6 +228,20 @@ class Store:
     def set_setting(self, key: str, value: str) -> None:
         self._run("INSERT INTO settings(key, value) VALUES(?,?) "
                   "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+
+    def fetch_interval_minutes(self, default: int) -> int:
+        """The single global channel-refresh interval (minutes).
+
+        Admin-set value from the settings table, else the configured default.
+        """
+        raw = self.get_setting("fetch_interval_minutes")
+        try:
+            return max(1, int(raw)) if raw else max(1, int(default))
+        except ValueError:
+            return max(1, int(default))
+
+    def set_fetch_interval_minutes(self, minutes: int) -> None:
+        self.set_setting("fetch_interval_minutes", str(max(1, int(minutes))))
 
     def set_user_lang(self, user_id: int, lang: str) -> None:
         # Upsert: a user may pick a language before any explicit add_user call.
@@ -338,7 +365,6 @@ class Store:
 
     # ----------------------------------------------------- subscriptions
     def add_subscription(self, *, user_id: int, template: Template,
-                         interval_minutes: int,
                          sources: list[dict] | None = None,
                          dests: list[dict] | None = None,
                          source: str | None = None,
@@ -352,9 +378,9 @@ class Store:
         if dest_kind is not None and dest_chat_id is not None:
             dests = [{"kind": dest_kind, "chat_id": dest_chat_id, "title": dest_title}]
         cursor = self._run(
-            "INSERT INTO subscriptions(user_id, template_json, interval_minutes,"
-            " enabled, created_at) VALUES(?,?,?,1,?)",
-            (user_id, template.model_dump_json(), interval_minutes, _now()))
+            "INSERT INTO subscriptions(user_id, template_json,"
+            " enabled, created_at) VALUES(?,?,1,?)",
+            (user_id, template.model_dump_json(), _now()))
         sub_id = int(cursor.lastrowid or 0)
         for item in sources or []:
             self.add_sub_source(sub_id, item["source"], item.get("last_seen_id"))
@@ -414,7 +440,7 @@ class Store:
                   (last_seen_id, source_id))
 
     def set_subscription(self, sub_id: int, **fields) -> None:
-        allowed = {"template_json", "interval_minutes", "enabled", "last_run_at"}
+        allowed = {"template_json", "enabled", "last_run_at"}
         updates = {key: value for key, value in fields.items() if key in allowed}
         if not updates:
             return
@@ -428,15 +454,15 @@ class Store:
         self._run("DELETE FROM subscriptions WHERE id=?", (sub_id,))
 
     # ----------------------------------------------- watches (channel-level scheduling)
-    def sync_watches(self, default_interval: int) -> None:
+    def sync_watches(self) -> None:
         """Materialize: watches = union of the source channels of enabled subscriptions (idempotent).
 
-        - New channel: the cursor is the minimum cursor over all of that channel's subscriptions (no lost messages); the interval is the minimum subscription interval.
-        - Existing channel: kept as is (the interval may have been overridden by an admin and is not overwritten); retired and deleted when it has no enabled watchers.
+        - New channel: the cursor is the minimum cursor over all of that channel's subscriptions (no lost messages).
+        - Existing channel: kept as is; retired and deleted when it has no enabled watchers.
+        Refresh timing is the single global interval (see fetch_interval_minutes).
         """
         rows = self._query(
-            "SELECT s.source AS channel, MIN(s.last_seen_id) AS cursor,"
-            " MIN(sub.interval_minutes) AS interval"
+            "SELECT s.source AS channel, MIN(s.last_seen_id) AS cursor"
             " FROM sub_sources s JOIN subscriptions sub ON sub.id = s.sub_id"
             " WHERE sub.enabled=1 GROUP BY s.source")
         live = {row["channel"] for row in rows}
@@ -444,20 +470,19 @@ class Store:
         for row in rows:
             if row["channel"] in existing:
                 continue
-            interval = max(1, int(row["interval"] or default_interval))
             self._run(
-                "INSERT INTO watches(channel, last_seen_id, interval_minutes,"
-                " last_fetch_at) VALUES(?,?,?,NULL)",
-                (row["channel"], row["cursor"], interval))
+                "INSERT INTO watches(channel, last_seen_id, last_fetch_at)"
+                " VALUES(?,?,NULL)",
+                (row["channel"], row["cursor"]))
         for channel in existing - live:
             self._run("DELETE FROM watches WHERE channel=?", (channel,))
 
-    def due_watches(self, now: datetime) -> list[dict]:
-        """Channels that are due (never fetched, or last fetched longer ago than the interval)."""
+    def due_watches(self, now: datetime, interval_minutes: int) -> list[dict]:
+        """Channels that are due (never fetched, or last fetched longer ago than the global interval)."""
         due = []
         for row in self._query("SELECT * FROM watches"):
             last = _parse_ts(row["last_fetch_at"])
-            if last is None or now - last >= timedelta(minutes=row["interval_minutes"]):
+            if last is None or now - last >= timedelta(minutes=interval_minutes):
                 due.append(row)
         return due
 
@@ -467,10 +492,6 @@ class Store:
     def get_watch(self, channel: str) -> dict | None:
         rows = self._query("SELECT * FROM watches WHERE channel=?", (channel,))
         return rows[0] if rows else None
-
-    def set_watch_interval(self, channel: str, minutes: int) -> None:
-        self._run("UPDATE watches SET interval_minutes=? WHERE channel=?",
-                  (max(1, int(minutes)), channel))
 
     def mark_watch_fetched(self, channel: str, last_seen_id: int | None = None,
                            when: str | None = None) -> None:

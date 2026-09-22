@@ -100,8 +100,8 @@ async def _dispatch(svc, context, args: list[str], lang: str) -> str:
         return _usage_summary(svc, min(max(days, 1), 365), lang)
     if cmd == "watches":
         return _watches(svc, lang)
-    if cmd == "watch":
-        return _set_watch(svc, args, lang)
+    if cmd == "interval":
+        return _interval(svc, args, lang)
     if cmd in ("block", "unblock"):
         return await _set_status(svc, context, cmd, _uid(args, 1, lang), lang)
     if cmd == "quota":
@@ -143,6 +143,9 @@ def _overview(svc, lang: str) -> str:
     lines.append(t(lang, "admin_subs_line", total=subs["total"], enabled=subs["enabled"],
                     paused=subs["total"] - subs["enabled"]))
     lines.append(t(lang, "admin_lang_line", language=LANG_LABELS[_current_default_lang(svc)]))
+    lines.append(t(lang, "admin_interval_line",
+                    minutes=svc.store.fetch_interval_minutes(
+                        svc.settings.default_interval_minutes)))
     lines.append("")
     for label_key, since in (("admin_period_today", now - timedelta(days=1)),
                              ("admin_period_7d", now - timedelta(days=7)),
@@ -163,7 +166,7 @@ def _overview(svc, lang: str) -> str:
 
 
 def _watches(svc, lang: str) -> str:
-    """Channel-level refresh schedule."""
+    """Channel-level refresh schedule (one global interval for every channel)."""
     store = svc.store
     lines = [t(lang, "admin_watch_list_title"), ""]
     rows = store.list_watches()
@@ -173,26 +176,27 @@ def _watches(svc, lang: str) -> str:
                 if row["last_fetch_at"] else t(lang, "admin_watch_never"))
         cursor = row["last_seen_id"] if row["last_seen_id"] is not None else "—"
         lines.append(t(lang, "admin_watch_line", channel=row["channel"],
-                        interval=row["interval_minutes"], watchers=watchers,
-                        cursor=cursor, last=last))
+                        watchers=watchers, cursor=cursor, last=last))
     if not rows:
         lines.append(t(lang, "admin_none"))
     lines.append("")
-    lines.append(t(lang, "admin_watch_hint"))
+    lines.append(t(lang, "admin_interval_line",
+                    minutes=store.fetch_interval_minutes(
+                        svc.settings.default_interval_minutes)))
     return "\n".join(lines)
 
 
-def _set_watch(svc, args: list[str], lang: str) -> str:
-    if len(args) < 3:
-        raise ValueError(t(lang, "admin_watch_usage_error"))
-    channel = args[1].lstrip("@").strip()
-    if not args[2].isdigit() or int(args[2]) < 1:
-        raise ValueError(t(lang, "admin_watch_bad_minutes"))
-    if not svc.store.get_watch(channel):
-        return t(lang, "admin_watch_unknown", channel=channel)
-    minutes = int(args[2])
-    svc.store.set_watch_interval(channel, minutes)
-    return t(lang, "admin_watch_set", channel=channel, minutes=minutes)
+def _interval(svc, args: list[str], lang: str) -> str:
+    """Global refresh interval: show (no args) or set (/admin interval <minutes>)."""
+    default = svc.settings.default_interval_minutes
+    if len(args) < 2:
+        return t(lang, "admin_interval_show",
+                 minutes=svc.store.fetch_interval_minutes(default))
+    if not args[1].isdigit() or not 1 <= int(args[1]) <= 1440:
+        raise ValueError(t(lang, "admin_interval_bad_minutes"))
+    minutes = int(args[1])
+    svc.store.set_fetch_interval_minutes(minutes)
+    return t(lang, "admin_interval_set", minutes=minutes)
 
 
 def _users(svc, limit: int, lang: str) -> str:

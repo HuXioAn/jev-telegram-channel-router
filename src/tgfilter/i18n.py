@@ -64,8 +64,8 @@ _EN: dict[str, str] = {
         "Notes:\n"
         "· Only public channels with web preview are supported; channels that disabled\n"
         "  preview cannot be fetched;\n"
-        "· Refresh cadence is managed centrally per channel (each channel is fetched and\n"
-        "  judged once per round), so there is no per-subscription interval to set;\n"
+        "· All channels refresh on one global schedule (admin-configured) and each is\n"
+        "  fetched and judged once per round, so there is no per-subscription interval;\n"
         "· Only posts newer than the subscription are delivered; long downtime may miss\n"
         "  posts beyond the preview window;\n"
         "· This bot never uses a userbot and never reads private channels."
@@ -242,8 +242,8 @@ _EN: dict[str, str] = {
         "/admin users [n] — user list (default 30)\n"
         "/admin user <id> — user detail (usage, quota, subscriptions)\n"
         "/admin usage [days] — usage summary by user (default 30 days)\n"
-        "/admin watches — channel refresh schedule (interval/cursor/watchers)\n"
-        "/admin watch <channel> <minutes> — set a channel's refresh interval\n"
+        "/admin watches — channel refresh schedule (cursor/watchers/last fetch)\n"
+        "/admin interval <minutes> — set the global refresh interval (1–1440)\n"
         "/admin block <id> | unblock <id> — suspend / restore\n"
         "/admin quota <id> sub <n> — subscription cap (0 = default)\n"
         "/admin quota <id> jev <n> — monthly judgment quota (0 = unlimited)\n"
@@ -267,13 +267,12 @@ _EN: dict[str, str] = {
     "admin_lang_set": "✅ Default language set to {language}. Users can override it with /lang.",
     "admin_lang_bad": "Usage: /admin lang <en|zh>",
     "admin_watch_list_title": "📡 Channel refresh schedule",
-    "admin_watch_line": "· @{channel} | every {interval} min | watchers {watchers} | cursor {cursor} | last {last}",
+    "admin_watch_line": "· @{channel} | watchers {watchers} | cursor {cursor} | last {last}",
     "admin_watch_never": "never",
-    "admin_watch_hint": "Adjust: /admin watch <channel> <minutes>",
-    "admin_watch_usage_error": "Usage: /admin watch <channel> <minutes>",
-    "admin_watch_bad_minutes": "Minutes must be a positive integer",
-    "admin_watch_unknown": "❌ No such watched channel {channel} (see /admin watches)",
-    "admin_watch_set": "✅ @{channel}: refreshing every {minutes} minutes.",
+    "admin_interval_line": "⏱ Global refresh interval (/admin interval <minutes>): every {minutes} min",
+    "admin_interval_show": "⏱ All channels refresh every {minutes} minutes.\nSet: /admin interval <minutes> (1–1440)",
+    "admin_interval_set": "✅ Global refresh interval set: every {minutes} minutes (all channels).",
+    "admin_interval_bad_minutes": "Minutes must be an integer between 1 and 1440",
     "admin_users_title": "👥 Users ({n} total, showing {shown}; usage = 30d)",
     "admin_user_line": "{mark} {uid} {name} | subs {subs} | {rollup}",
     "admin_users_none": "(no users yet)",
@@ -342,7 +341,7 @@ _ZH: dict[str, str] = {
         "  发到订阅的目标，用来核对实际推送效果；不推进游标、不算正式推送。\n\n"
         "注意：\n"
         "· 只支持公开频道的网页预览；若频道关闭了预览则无法抓取；\n"
-        "· 频道的刷新节奏由系统统一调度（同一频道只抓取、判定一次），无需逐条设置频率；\n"
+        "· 所有频道按统一的全局节奏刷新（管理员可配置；同一频道每轮只抓取、判定一次），无需逐条设置频率；\n"
         "· 只推送订阅之后出现的新消息，停机过久可能漏掉超出预览窗口的消息；\n"
         "· 本机器人不使用 userbot，不读取私有频道。"
     ),
@@ -514,8 +513,8 @@ _ZH: dict[str, str] = {
         "/admin users [n] — 用户列表（默认 30）\n"
         "/admin user <id> — 用户详情（用量、配额、订阅）\n"
         "/admin usage [days] — 按用户用量汇总（默认 30 天）\n"
-        "/admin watches — 频道刷新调度（间隔/游标/订阅数）\n"
-        "/admin watch <频道> <分钟> — 调整某频道刷新间隔\n"
+        "/admin watches — 频道刷新调度（游标/订阅数/上次抓取）\n"
+        "/admin interval <分钟> — 设置全局刷新间隔（1–1440）\n"
         "/admin block <id> 或 unblock <id> — 停用 / 恢复\n"
         "/admin quota <id> sub <n> — 订阅数上限（0=恢复默认）\n"
         "/admin quota <id> jev <n> — 每月判定配额（0=不限）\n"
@@ -539,13 +538,12 @@ _ZH: dict[str, str] = {
     "admin_lang_set": "✅ 默认语言已设置为 {language}（用户可用 /lang 覆盖）。",
     "admin_lang_bad": "用法：/admin lang <en|zh>",
     "admin_watch_list_title": "📡 频道刷新调度",
-    "admin_watch_line": "· @{channel}｜每 {interval} 分钟｜订阅 {watchers}｜游标 {cursor}｜上次 {last}",
+    "admin_watch_line": "· @{channel}｜订阅 {watchers}｜游标 {cursor}｜上次 {last}",
     "admin_watch_never": "未抓取",
-    "admin_watch_hint": "调整：/admin watch <频道> <分钟>",
-    "admin_watch_usage_error": "用法：/admin watch <频道> <分钟>",
-    "admin_watch_bad_minutes": "分钟数应为正整数",
-    "admin_watch_unknown": "❌ 没有在观察的频道 {channel}（用 /admin watches 查看）",
-    "admin_watch_set": "✅ 已设置 @{channel}：每 {minutes} 分钟刷新。",
+    "admin_interval_line": "⏱ 全局刷新间隔（/admin interval <分钟>）：每 {minutes} 分钟",
+    "admin_interval_show": "⏱ 所有频道每 {minutes} 分钟刷新一次。\n设置：/admin interval <分钟>（1–1440）",
+    "admin_interval_set": "✅ 全局刷新间隔已设置为每 {minutes} 分钟（所有频道）。",
+    "admin_interval_bad_minutes": "分钟数应为 1–1440 的整数",
     "admin_users_title": "👥 用户列表（共 {n}，显示 {shown}；用量=30 天）",
     "admin_user_line": "{mark} {uid} {name}｜订阅 {subs}｜{rollup}",
     "admin_users_none": "（暂无用户）",

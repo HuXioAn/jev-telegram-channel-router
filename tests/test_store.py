@@ -36,15 +36,15 @@ def test_subscription_crud_and_template_roundtrip(tmp_path):
     template = make_template()
     sub_id = store.add_subscription(user_id=1, source="chan", template=template,
                                     dest_kind="dm", dest_chat_id=1, dest_title="私聊",
-                                    interval_minutes=20, last_seen_id=100)
+                                    last_seen_id=100)
     sub = store.get_subscription(sub_id)
     assert [s["source"] for s in sub["sources"]] == ["chan"]
     assert sub["sources"][0]["last_seen_id"] == 100
     assert [(d["kind"], d["chat_id"]) for d in sub["dests"]] == [("dm", 1)]
     assert template_of(sub) == template  # lossless JSON round trip
-    store.set_subscription(sub_id, interval_minutes=30, enabled=0)
+    store.set_subscription(sub_id, enabled=0)
     sub = store.get_subscription(sub_id)
-    assert sub["interval_minutes"] == 30 and sub["enabled"] == 0
+    assert sub["enabled"] == 0 and "interval_minutes" not in sub  # single global schedule
     store.delete_subscription(sub_id)
     assert store.get_subscription(sub_id) is None
     assert store.sub_sources(sub_id) == [] and store.sub_dests(sub_id) == []  # cascade cleanup
@@ -54,7 +54,7 @@ def test_sub_sources_and_dests_n_to_n(tmp_path):
     """n sources ↔ m destinations: add/remove, dedup, independent cursors."""
     store = _store(tmp_path)
     sub_id = store.add_subscription(
-        user_id=1, template=make_template(), interval_minutes=20,
+        user_id=1, template=make_template(),
         sources=[{"source": "a", "last_seen_id": 10},
                  {"source": "b", "last_seen_id": 20}],
         dests=[{"kind": "dm", "chat_id": 1, "title": "私聊"},
@@ -83,44 +83,46 @@ def test_sub_sources_and_dests_n_to_n(tmp_path):
 
 
 def test_watches_materialize_due_and_retire(tmp_path):
-    """Channel-level scheduling: materialization (minimum cursor / minimum interval), due checks, retirement and re-materialization."""
+    """Channel-level scheduling: materialization (minimum cursor), due checks against
+    the single global interval, retirement and re-materialization."""
     store = _store(tmp_path)
     store.add_subscription(user_id=1, source="chan", template=make_template(),
                            dest_kind="dm", dest_chat_id=1, dest_title="私聊",
-                           interval_minutes=20, last_seen_id=100)
+                           last_seen_id=100)
     b_id = store.add_subscription(user_id=2, source="chan", template=make_template(),
                                   dest_kind="dm", dest_chat_id=2, dest_title="私聊",
-                                  interval_minutes=10, last_seen_id=150)
-    store.sync_watches(20)
+                                  last_seen_id=150)
+    store.sync_watches()
     watch = store.get_watch("chan")
     assert watch["last_seen_id"] == 100            # minimum cursor (no lost messages)
-    assert watch["interval_minutes"] == 10         # minimum interval
 
     now = datetime.now(timezone.utc)
-    assert [w["channel"] for w in store.due_watches(now)] == ["chan"]  # never fetched → due
+    assert [w["channel"] for w in store.due_watches(now, 20)] == ["chan"]  # never fetched → due
     store.mark_watch_fetched("chan", 160, when=now.isoformat())
-    assert store.due_watches(now) == []
-    later = [w["channel"] for w in store.due_watches(now + timedelta(minutes=10))]
+    assert store.due_watches(now, 20) == []
+    later = [w["channel"] for w in store.due_watches(now + timedelta(minutes=20), 20)]
     assert later == ["chan"]
     watch = store.get_watch("chan")
     assert watch["last_seen_id"] == 160 and watch["last_fetch_at"]
 
-    store.set_watch_interval("chan", 5)
-    assert store.get_watch("chan")["interval_minutes"] == 5
-    assert store.due_watches(now + timedelta(minutes=5))[0]["channel"] == "chan"
+    # one global interval for every channel, admin-configurable (settings table)
+    assert store.fetch_interval_minutes(20) == 20       # unset → configured default
+    store.set_fetch_interval_minutes(5)
+    assert store.fetch_interval_minutes(20) == 5
+    assert store.due_watches(now + timedelta(minutes=5),
+                             store.fetch_interval_minutes(20))[0]["channel"] == "chan"
 
     store.set_subscription(b_id, enabled=0)        # paused no longer counts as a watcher
-    store.sync_watches(20)
-    assert store.get_watch("chan")["interval_minutes"] == 5   # an existing interval is not overwritten
+    store.sync_watches()
 
     store.delete_subscription(b_id)
     store.delete_subscription(1)
-    store.sync_watches(20)
+    store.sync_watches()
     assert store.get_watch("chan") is None         # no enabled watchers → retired
     store.add_subscription(user_id=3, source="chan", template=make_template(),
                            dest_kind="dm", dest_chat_id=3, dest_title="私聊",
-                           interval_minutes=20, last_seen_id=200)
-    store.sync_watches(20)
+                           last_seen_id=200)
+    store.sync_watches()
     assert store.get_watch("chan")["last_seen_id"] == 200      # re-materialized
 
 
@@ -130,10 +132,10 @@ def test_store_reopen_materializes_watches(tmp_path):
     store = Store(path)
     store.add_subscription(user_id=1, source="chan", template=make_template(),
                            dest_kind="dm", dest_chat_id=1, dest_title="私聊",
-                           interval_minutes=15, last_seen_id=100)
+                           last_seen_id=100)
     reopened = Store(path)
     watch = reopened.get_watch("chan")
-    assert watch["last_seen_id"] == 100 and watch["interval_minutes"] == 15
+    assert watch["last_seen_id"] == 100
 
 
 def test_judgments_cache_roundtrip_and_prune(tmp_path):
@@ -154,13 +156,13 @@ def test_watchers_of_only_enabled(tmp_path):
     store = _store(tmp_path)
     a = store.add_subscription(user_id=1, source="chan", template=make_template(),
                                dest_kind="dm", dest_chat_id=1, dest_title="私聊",
-                               interval_minutes=20, last_seen_id=100)
+                               last_seen_id=100)
     store.add_subscription(user_id=2, source="chan", template=make_template(),
                            dest_kind="dm", dest_chat_id=2, dest_title="私聊",
-                           interval_minutes=20, last_seen_id=100)
+                           last_seen_id=100)
     store.add_subscription(user_id=3, source="other", template=make_template(),
                            dest_kind="dm", dest_chat_id=3, dest_title="私聊",
-                           interval_minutes=20, last_seen_id=100)
+                           last_seen_id=100)
     assert [w["user_id"] for w in store.watchers_of("chan")] == [1, 2]
     store.set_subscription(a, enabled=0)
     assert [w["user_id"] for w in store.watchers_of("chan")] == [2]
@@ -203,7 +205,7 @@ def test_user_fields_and_counts(tmp_path):
     assert store.count_users() == {"total": 1, "active": 1, "blocked": 0}
     store.add_subscription(user_id=1, source="c", template=make_template(),
                            dest_kind="dm", dest_chat_id=1, dest_title="私聊",
-                           interval_minutes=20, last_seen_id=1)
+                           last_seen_id=1)
     assert store.count_subscriptions() == {"total": 1, "enabled": 1}
     assert store.count_subscriptions_for(1) == 1
 
@@ -271,3 +273,44 @@ def test_migration_splits_legacy_subscription(tmp_path):
     assert template_of(sub) == make_template()
     cols = {row["name"] for row in store._query("PRAGMA table_info(subscriptions)")}
     assert "source" not in cols and "dest_chat_id" not in cols  # legacy columns removed
+    assert "interval_minutes" not in cols                      # global interval since
+
+
+def test_migration_drops_interval_columns(tmp_path):
+    """Old database (per-channel / per-subscription intervals): columns dropped on
+    open, data preserved."""
+    import sqlite3
+
+    path = str(tmp_path / "old_interval.db")
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        "CREATE TABLE subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " user_id INTEGER NOT NULL, template_json TEXT NOT NULL,"
+        " interval_minutes INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,"
+        " last_run_at TEXT, created_at TEXT NOT NULL);"
+        "CREATE TABLE sub_sources (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " sub_id INTEGER NOT NULL, source TEXT NOT NULL, last_seen_id INTEGER,"
+        " UNIQUE(sub_id, source));"
+        "CREATE TABLE sub_dests (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " sub_id INTEGER NOT NULL, kind TEXT NOT NULL, chat_id INTEGER NOT NULL,"
+        " title TEXT, UNIQUE(sub_id, chat_id));"
+        "CREATE TABLE watches (channel TEXT PRIMARY KEY, last_seen_id INTEGER,"
+        " interval_minutes INTEGER NOT NULL, last_fetch_at TEXT);")
+    conn.execute(
+        "INSERT INTO subscriptions(user_id, template_json, interval_minutes,"
+        " created_at) VALUES(1, ?, 20, '2026-01-01')",
+        (make_template().model_dump_json(),))
+    conn.execute("INSERT INTO sub_sources(sub_id, source, last_seen_id)"
+                 " VALUES(1, 'chan', 500)")
+    conn.execute("INSERT INTO watches(channel, last_seen_id, interval_minutes)"
+                 " VALUES('chan', 500, 10)")
+    conn.commit()
+    conn.close()
+    store = Store(path)
+    for table in ("subscriptions", "watches"):
+        cols = {row["name"] for row in store._query(f"PRAGMA table_info({table})")}
+        assert "interval_minutes" not in cols
+    sub = store.get_subscription(1)
+    assert [s["source"] for s in sub["sources"]] == ["chan"]
+    watch = store.get_watch("chan")
+    assert watch["last_seen_id"] == 500 and watch["last_fetch_at"] is None
