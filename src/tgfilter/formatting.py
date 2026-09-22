@@ -1,7 +1,9 @@
 """Presentation helpers: template summaries, digests, Telegram chunking."""
 from __future__ import annotations
 
+import html
 import json
+import re
 
 from .i18n import t
 from .models import Post, Template
@@ -55,20 +57,43 @@ def template_summary(lang: str, template: Template) -> str:
     return "\n".join(lines)
 
 
+def _channel_of(url: str) -> str:
+    match = re.match(r"https?://t\.me/([^/]+)/", url or "")
+    return match.group(1) if match else ""
+
+
+def _post_block(post: Post, lang: str, limit: int) -> str:
+    """One block: the (escaped) post text + one footer line "post link | source",
+    both hyperlinked — the post link opens the post, the source name opens the
+    channel. The text is re-clipped so the whole block fits the chunk budget
+    (escaping can inflate text, so the cut lands on the escaped string and any
+    dangling entity is stripped)."""
+    channel = post.channel or _channel_of(post.url)
+    name = post.channel_title or (f"@{channel}" if channel else post.url)
+    channel_url = f"https://t.me/{channel}" if channel else post.url
+    footer = (f'<a href="{html.escape(post.url, quote=True)}">'
+              f'{t(lang, "fmt_post_link")}</a> | '
+              f'<a href="{html.escape(channel_url, quote=True)}">'
+              f'{html.escape(name)}</a>')
+    text = html.escape(post.text.strip())
+    budget = limit - len(footer) - 1  # one newline between text and footer
+    if budget > 0 and len(text) > budget:
+        text = re.sub(r"&[a-zA-Z#0-9]*$", "", text[:max(0, budget - 1)]) + "…"
+    return f"{text}\n{footer}" if text else footer
+
+
 def compose_digest(hits: list[tuple[Post, dict]], *, chunk_limit: int = 3800,
                    test: bool = False, lang: str = "en") -> list[str]:
-    """Hit list → one or more ready-to-send message texts.
+    """Hit list → one or more ready-to-send message texts (send with HTML parse mode).
 
-    Each message holds only the post text plus its link, blocks separated by a
-    blank line. Oversized digests are split into chunks (marker at the bottom);
-    test=True prepends the dry-run header to the first chunk.
+    Each block holds only the post text plus its "post link | source" link line,
+    blocks separated by a blank line. Oversized digests are split into chunks
+    (marker at the bottom); test=True prepends the dry-run header to the first
+    chunk.
     """
     if not hits:
         return []
-    blocks: list[str] = []
-    for post, _ in hits:
-        blocks.append("\n".join(part for part in (post.text.strip(), post.url)
-                                if part))
+    blocks = [_post_block(post, lang, chunk_limit) for post, _ in hits]
 
     chunks = _chunk_blocks(blocks, chunk_limit)
     if len(chunks) > 1:  # add the (i/n) marker when split
@@ -81,23 +106,16 @@ def compose_digest(hits: list[tuple[Post, dict]], *, chunk_limit: int = 3800,
 
 
 def _chunk_blocks(blocks: list[str], limit: int) -> list[str]:
+    """Pack blocks into chunks of at most `limit` chars (each block already fits)."""
     chunks: list[str] = []
     current = ""
     for block in blocks:
-        while True:
-            candidate = f"{current}\n\n{block}" if current else block
-            if len(candidate) <= limit:
-                current = candidate
-                break
-            if current:
-                chunks.append(current)
-                current = ""
-                continue
-            # a single block over the limit: hard split
-            chunks.append(block[:limit])
-            block = block[limit:]
-            if not block:
-                break
+        candidate = f"{current}\n\n{block}" if current else block
+        if current and len(candidate) > limit:
+            chunks.append(current)
+            current = block
+        else:
+            current = candidate
     if current:
         chunks.append(current)
     return chunks

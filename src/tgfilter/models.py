@@ -25,6 +25,8 @@ class Post(BaseModel):
     date: datetime | None = None
     text: str = ""
     url: str = ""
+    channel: str = ""        # source channel username (link target of the footer)
+    channel_title: str = ""  # display name of the source (page og:title)
 
 
 # Elements of criteria: a string or a structured object/array (mirrors Jev's EntryType, see the official Advanced docs).

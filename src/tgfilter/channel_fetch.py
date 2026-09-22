@@ -64,6 +64,7 @@ def parse_posts(page_html: str, channel: str,
     clipped text, and the link always points at the full post.
     """
     posts: list[Post] = []
+    title = parse_title(page_html)  # channel display name (page og:title)
     for block in _BLOCK_SPLIT_RE.split(page_html)[1:]:
         id_match = _POST_ID_RE.search(block)
         if not id_match:
@@ -86,7 +87,8 @@ def parse_posts(page_html: str, channel: str,
             except ValueError:
                 date = None
         posts.append(Post(id=post_id, date=date, text=clip_text(text, max_chars),
-                          url=f"https://t.me/{channel}/{post_id}"))
+                          url=f"https://t.me/{channel}/{post_id}",
+                          channel=channel, channel_title=title))
     return posts
 
 

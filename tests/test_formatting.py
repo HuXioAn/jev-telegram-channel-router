@@ -31,6 +31,7 @@ def test_test_result_page_bounded():
 
 def _post(mid: int, text: str = "内容", hour: int = 10) -> Post:
     return Post(id=mid, text=text, url=f"https://t.me/chan/{mid}",
+                channel="chan", channel_title="测试频道",
                 date=datetime(2026, 9, 20, hour, 0, tzinfo=timezone.utc))
 
 
@@ -85,13 +86,22 @@ def test_template_summary_renders_structured_entries():
     assert '{"summary":"低"}' in text
 
 
-def test_compose_digest_content_and_link_only():
+def test_compose_digest_text_plus_link_line():
+    """Each block: post text + one footer line — hyperlinked post link | source
+    name (linked to the channel), and nothing else."""
     hits = [(_post(1, "第一条消息", 10), _answers()),
             (_post(2, "第二条消息", 12), _answers())]
+
+    def footer(mid: int, label: str) -> str:
+        return (f'<a href="https://t.me/chan/{mid}">{label}</a> | '
+                f'<a href="https://t.me/chan">测试频道</a>')
+
     chunks = compose_digest(hits)
-    assert len(chunks) == 1
-    assert chunks[0] == ("第一条消息\nhttps://t.me/chan/1\n\n"
-                         "第二条消息\nhttps://t.me/chan/2")
+    assert chunks == ["第一条消息\n" + footer(1, "Original post") +
+                      "\n\n第二条消息\n" + footer(2, "Original post")]
+    zh = compose_digest(hits, lang="zh")
+    assert zh[0] == ("第一条消息\n" + footer(1, "原文链接") +
+                     "\n\n第二条消息\n" + footer(2, "原文链接"))
     # header and per-item prefixes are gone
     assert "📮" not in chunks[0] and "订阅 #" not in chunks[0]
     assert "命中" not in chunks[0] and "09-20" not in chunks[0]
@@ -103,18 +113,23 @@ def test_compose_digest_multi_chunk_marker_localized():
     en = compose_digest(hits, chunk_limit=2000)
     assert len(en) == 2
     assert all(len(c) <= 2010 for c in en)
-    assert sum(c.count("https://t.me/chan/") for c in en) == 3
+    for i in range(1, 4):   # every post link appears exactly once across chunks
+        assert sum(c.count(f'href="https://t.me/chan/{i}"') for c in en) == 1
     assert "(1/2)" in en[0] and "(2/2)" in en[1]
     zh = compose_digest(hits, chunk_limit=2000, lang="zh")
     assert "（1/2）" in zh[0] and "（2/2）" in zh[1]
 
 
-def test_compose_digest_hard_split_for_oversized_block():
-    hits = [(_post(1, "y" * 5000), _answers())]
+def test_compose_digest_escapes_html_and_clips_oversized_block():
+    """HTML is escaped; an oversized block is clipped to the budget (the link
+    always carries the full post) instead of split into fragments."""
+    hits = [(_post(1, "<b>重点</b> & " + "y" * 5000), _answers())]
     chunks = compose_digest(hits, chunk_limit=1000)
-    assert len(chunks) >= 5
-    assert all(len(c) <= 1010 for c in chunks)
-    assert sum(c.count("https://t.me/chan/1") for c in chunks) == 1
+    assert len(chunks) == 1
+    assert len(chunks[0]) <= 1000
+    assert "&lt;b&gt;重点&lt;/b&gt; &amp;" in chunks[0]
+    assert chunks[0].count('href="https://t.me/chan/1"') == 1
+    assert chunks[0].endswith("</a>")
 
 
 def test_compose_digest_empty():

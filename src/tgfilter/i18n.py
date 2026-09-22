@@ -229,6 +229,7 @@ _EN: dict[str, str] = {
     "fmt_options": "   Options: ",
     "fmt_levels": "   Levels: ",
     "fmt_match": "🎯 Match condition: {rule}",
+    "fmt_post_link": "Original post",
     "chunk_mark": "({i}/{n})",
     "test_mark": "🧪 Sample (not a real delivery)\n\n",
     # ------------------------------------------------------- pipeline
@@ -500,6 +501,7 @@ _ZH: dict[str, str] = {
     "fmt_options": "   选项：",
     "fmt_levels": "   等级：",
     "fmt_match": "🎯 命中条件：{rule}",
+    "fmt_post_link": "原文链接",
     "chunk_mark": "（{i}/{n}）",
     "test_mark": "🧪 试跑样张（非正式推送）\n\n",
     # ------------------------------------------------------- pipeline

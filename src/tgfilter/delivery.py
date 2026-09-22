@@ -27,7 +27,8 @@ class Sender:
     async def _send_one(self, chat_id: int, text: str) -> None:
         for attempt in range(1, _SEND_ATTEMPTS + 1):
             try:
-                await self._bot.send_message(chat_id=chat_id, text=text)
+                await self._bot.send_message(chat_id=chat_id, text=text,
+                                             parse_mode="HTML")
                 return
             except RetryAfter as exc:  # Telegram rate limit: wait as told, then retry
                 seconds = float(getattr(exc.retry_after, "total_seconds",
