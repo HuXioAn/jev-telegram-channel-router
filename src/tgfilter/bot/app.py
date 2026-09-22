@@ -179,7 +179,7 @@ def build_application(settings: Settings) -> Application:
         entry_points=[
             CommandHandler("new", h.cmd_new),
             CallbackQueryHandler(h.cmd_new, pattern=r"^ui:new$"),
-            CallbackQueryHandler(h.on_src_add, pattern=r"^ms:add:"),
+            CallbackQueryHandler(h.on_src_add, pattern=r"^ms:(add|menu):"),
             CallbackQueryHandler(h.on_edit_template, pattern=r"^etpl:"),
         ],
         states={

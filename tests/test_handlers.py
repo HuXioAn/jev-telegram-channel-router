@@ -490,9 +490,10 @@ async def test_edit_sources_add_remove(tmp_path):
     store, bot, context, sub_id = _edit_env(tmp_path)
     context.application.bot_data["services"].fetcher = FakeFetcher(head_id=777)
 
-    update = _cb_update(f"ms:add:{sub_id}")
+    update = _cb_update(f"ms:menu:{sub_id}")   # the edit menu's 📡 button
     _attach_bot(update, bot)
     assert await h.on_src_add(update, context) == h.WAIT_SOURCE
+    assert any("继续发送频道名/链接即可添加" in text for text in bot.edited)
 
     update = _text_update("@chan_b")
     update.message.set_bot(bot)

@@ -342,7 +342,11 @@ async def on_src_manager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def on_src_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Edit a subscription: enter the "add source channel" input flow."""
+    """Edit a subscription: open the source manager (send names/links to add).
+
+    Conversation entry point (ms:add:<id> / ms:menu:<id>): without conversation
+    state, typed channel links fall through to the plain-text fallback instead of
+    being registered."""
     query = update.callback_query
     await query.answer()
     svc = _svc(context)
@@ -354,7 +358,10 @@ async def on_src_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
     context.user_data.clear()
     context.user_data[K_SRC_CTX] = str(sub["id"])
-    await _edit(query, msg.edit_source_ask(lang))
+    await _edit(query,
+                msg.src_manager_text(lang, [item["source"] for item in sub["sources"]],
+                                     next_step=False),
+                reply_markup=src_manager_kb(lang, str(sub["id"]), _src_entries(sub)))
     return WAIT_SOURCE
 
 

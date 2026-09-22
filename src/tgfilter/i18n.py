@@ -187,12 +187,6 @@ _EN: dict[str, str] = {
         "Example: “Major China-related news, no celebrity gossip”.\n\n"
         "You can also paste a JSON template. Send /cancel to abort."
     ),
-    "edit_source_ask": (
-        "Send the channel(s) to add:\n"
-        "· @channel_name\n"
-        "· or link https://t.me/channel_name\n\n"
-        "New channels start delivering from the latest post. Send /cancel to finish."
-    ),
     "chat_added": "✅ Channel “{title}” registered. You can now pick it in the /new targets list.",
     # ------------------------------------------------------------ buttons
     "btn_new": "📝 New subscription",
@@ -458,12 +452,6 @@ _ZH: dict[str, str] = {
         "🧩 请重新描述筛选条件（确认后覆盖当前模板）：\n"
         "例如：「中国相关的重磅消息，排除娱乐八卦」。\n\n"
         "也可以直接粘贴 JSON 模板。发送 /cancel 取消。"
-    ),
-    "edit_source_ask": (
-        "请发送要添加的频道：\n"
-        "· @频道名\n"
-        "· 或链接 https://t.me/频道名\n\n"
-        "新频道从当前最新消息开始推送。发送 /cancel 结束。"
     ),
     "chat_added": "✅ 已登记频道「{title}」。现在可以在 /new 的目的地列表中选择它。",
     # ------------------------------------------------------------ buttons

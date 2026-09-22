@@ -52,6 +52,24 @@ async def test_different_chats_run_concurrently():
     assert ran == ["c-start", "d-start", "d-end", "c-end"]
 
 
+def test_source_editor_buttons_open_the_conversation():
+    """The edit menu's source screen (ms:menu:<id>) and the add entry (ms:add:<id>)
+    must both be ConversationHandler entry points: without conversation state a
+    typed channel link falls through to the plain-text fallback."""
+    from telegram.ext import CallbackQueryHandler, ConversationHandler
+
+    from tgfilter.bot.app import build_application
+    from tgfilter.config import Settings
+
+    app = build_application(Settings(bot_token="123456789:" + "A" * 30))
+    handlers = [h for group in app.handlers.values() for h in group]
+    patterns = [entry.pattern for conv in handlers if isinstance(conv, ConversationHandler)
+                for entry in conv.entry_points
+                if isinstance(entry, CallbackQueryHandler) and entry.pattern]
+    for data in ("ms:add:1", "ms:menu:1", "etpl:1"):
+        assert any(pattern.match(data) for pattern in patterns), data
+
+
 def test_build_application_disables_link_previews():
     """Link previews are disabled instance-wide (Defaults): messages with links
     must not sprout a preview box below the text."""

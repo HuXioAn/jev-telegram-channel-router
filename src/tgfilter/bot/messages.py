@@ -273,9 +273,6 @@ def edit_template_ask(lang: str) -> str:
     return t(lang, "edit_template_ask")
 
 
-def edit_source_ask(lang: str) -> str:
-    return t(lang, "edit_source_ask")
-
 
 # ------------------------------------------------------------------- misc
 def chat_added(lang: str, title: str) -> str:
