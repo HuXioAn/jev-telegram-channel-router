@@ -132,8 +132,9 @@ token counts returned by the APIs**:
   line "Original post | source name", both hyperlinked (the post link opens the
   post, the source name opens the channel; native forwarding is impossible — the
   bot has no rights over source channels). Post text is clipped to
-  `MAX_POST_CHARS` (default 3500) at fetch time: Jev judges the clipped text and
-  the copy carries clipped text + the link to the full post.
+  `MAX_POST_CHARS` (default 500) at fetch time: Jev judges the clipped text and
+  the copy carries clipped text + the link to the full post; truncated posts
+  get a truncation marker at the end of the message ("过长被截断，完整请看原文").
 
 ## Testing
 

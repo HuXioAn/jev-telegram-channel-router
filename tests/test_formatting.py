@@ -39,6 +39,18 @@ def _answers(score: float = 0.9) -> dict:
     return {"china": {"type": "noul", "noul": score}}
 
 
+def test_truncated_note_at_block_end():
+    """Truncated posts end their block with a truncation marker (after the link
+    footer); intact posts never carry it."""
+    cut = _post(1).model_copy(update={"truncated": True})
+    [zh] = compose_digest([(cut, _answers())], lang="zh")
+    assert zh.endswith("（过长被截断，完整请看原文）")
+    [en] = compose_digest([(cut, _answers())], lang="en")
+    assert en.endswith("(truncated — see the full post via the link)")
+    [plain] = compose_digest([(_post(2), _answers())], lang="zh")
+    assert "截断" not in plain
+
+
 def test_match_summary_uses_titles():
     assert match_summary("en", make_template()) == "相关 >= 0.7"
 
@@ -122,14 +134,15 @@ def test_compose_digest_multi_chunk_marker_localized():
 
 def test_compose_digest_escapes_html_and_clips_oversized_block():
     """HTML is escaped; an oversized block is clipped to the budget (the link
-    always carries the full post) instead of split into fragments."""
+    always carries the full post) instead of split into fragments, and the
+    truncation marker ends the block."""
     hits = [(_post(1, "<b>重点</b> & " + "y" * 5000), _answers())]
     chunks = compose_digest(hits, chunk_limit=1000)
     assert len(chunks) == 1
     assert len(chunks[0]) <= 1000
     assert "&lt;b&gt;重点&lt;/b&gt; &amp;" in chunks[0]
     assert chunks[0].count('href="https://t.me/chan/1"') == 1
-    assert chunks[0].endswith("</a>")
+    assert chunks[0].endswith("(truncated — see the full post via the link)")
 
 
 def test_compose_digest_empty():

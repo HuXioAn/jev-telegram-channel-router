@@ -76,10 +76,17 @@ def _post_block(post: Post, lang: str, limit: int) -> str:
               f'<a href="{html.escape(channel_url, quote=True)}">'
               f'{html.escape(name)}</a>')
     text = html.escape(post.text.strip())
-    budget = limit - len(footer) - 1  # one newline between text and footer
+    truncated = post.truncated
+    note = t(lang, "truncated_note")
+    # budget covers text + "\n" + footer + worst case "\n" + truncation marker,
+    # so one block always fits the chunk limit
+    budget = limit - len(footer) - len(note) - 2
     if budget > 0 and len(text) > budget:
         text = re.sub(r"&[a-zA-Z#0-9]*$", "", text[:max(0, budget - 1)]) + "…"
-    return f"{text}\n{footer}" if text else footer
+        truncated = True
+    block = f"{text}\n{footer}" if text else footer
+    # truncation marker sits at the very end of the block (after the link footer)
+    return f"{block}\n{note}" if truncated else block
 
 
 def compose_digest(hits: list[tuple[Post, dict]], *, chunk_limit: int = 3800,

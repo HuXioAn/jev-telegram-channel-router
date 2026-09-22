@@ -86,7 +86,9 @@ def parse_posts(page_html: str, channel: str,
                 date = datetime.fromisoformat(date_match.group(1).replace("Z", "+00:00"))
             except ValueError:
                 date = None
-        posts.append(Post(id=post_id, date=date, text=clip_text(text, max_chars),
+        clipped = clip_text(text, max_chars)
+        posts.append(Post(id=post_id, date=date, text=clipped,
+                          truncated=clipped != text,
                           url=f"https://t.me/{channel}/{post_id}",
                           channel=channel, channel_title=title))
     return posts

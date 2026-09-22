@@ -54,8 +54,9 @@ def test_parse_posts_truncates_long_text():
     html = make_page("chan", [101], text="长" * 5000)
     post = parse_posts(html, "chan", max_chars=100)[0]
     assert len(post.text) == 100 and post.text.endswith("…")
+    assert post.truncated is True
     assert post.url == "https://t.me/chan/101"
-    assert len(parse_posts(html, "chan")[0].text) <= 3500 + 1  # default cap applies
+    assert len(parse_posts(html, "chan")[0].text) <= 500 + 1  # default cap (500) applies
 
 
 def test_parse_title():

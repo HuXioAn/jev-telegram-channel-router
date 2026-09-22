@@ -224,6 +224,7 @@ _EN: dict[str, str] = {
     "fmt_levels": "   Levels: ",
     "fmt_match": "🎯 Match condition: {rule}",
     "fmt_post_link": "Original post",
+    "truncated_note": "(truncated — see the full post via the link)",
     "chunk_mark": "({i}/{n})",
     "test_mark": "🧪 Sample (not a real delivery)\n\n",
     # ------------------------------------------------------- pipeline
@@ -490,6 +491,7 @@ _ZH: dict[str, str] = {
     "fmt_levels": "   等级：",
     "fmt_match": "🎯 命中条件：{rule}",
     "fmt_post_link": "原文链接",
+    "truncated_note": "（过长被截断，完整请看原文）",
     "chunk_mark": "（{i}/{n}）",
     "test_mark": "🧪 试跑样张（非正式推送）\n\n",
     # ------------------------------------------------------- pipeline

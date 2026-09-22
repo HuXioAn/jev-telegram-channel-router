@@ -7,7 +7,7 @@ from typing import Annotated, Any, Literal, Union
 from pydantic import BaseModel, Field, model_validator
 
 
-DEFAULT_MAX_POST_CHARS = 3500  # post text judged by Jev / delivered (the rest lives behind the link)
+DEFAULT_MAX_POST_CHARS = 500   # post text judged by Jev / delivered (the rest lives behind the link)
 TELEGRAM_TEXT_LIMIT = 4000     # hard cap for one outgoing text (Telegram allows 4096)
 
 
@@ -27,6 +27,7 @@ class Post(BaseModel):
     url: str = ""
     channel: str = ""        # source channel username (link target of the footer)
     channel_title: str = ""  # display name of the source (page og:title)
+    truncated: bool = False  # text was clipped (delivery marks it at the message end)
 
 
 # Elements of criteria: a string or a structured object/array (mirrors Jev's EntryType, see the official Advanced docs).
