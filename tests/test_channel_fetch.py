@@ -48,6 +48,16 @@ def test_parse_posts_empty():
     assert parse_posts("<html><body>nothing</body></html>", "chan") == []
 
 
+def test_parse_posts_truncates_long_text():
+    """Overlong posts are clipped at fetch time: Jev judges and users receive the
+    clipped text + the link to the full post, never the whole blob."""
+    html = make_page("chan", [101], text="长" * 5000)
+    post = parse_posts(html, "chan", max_chars=100)[0]
+    assert len(post.text) == 100 and post.text.endswith("…")
+    assert post.url == "https://t.me/chan/101"
+    assert len(parse_posts(html, "chan")[0].text) <= 3500 + 1  # default cap applies
+
+
 def test_parse_title():
     assert parse_title(make_page("chan", [1], title="财经快讯")) == "财经快讯"
     assert parse_title("<html></html>") == ""

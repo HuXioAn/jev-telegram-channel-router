@@ -7,7 +7,10 @@ from __future__ import annotations
 
 from ..formatting import match_summary
 from ..i18n import t
-from ..models import format_answer_value
+from ..models import TELEGRAM_TEXT_LIMIT, clip_text, format_answer_value
+
+
+_MAX_EXAMPLES = 8  # example lines on a /test result page (the rest is folded)
 
 
 # ------------------------------------------------------------------ general
@@ -120,7 +123,7 @@ def bad_template_json(lang: str, err: object) -> str:
 
 def template_confirm(lang: str, summary: str, *, edit: bool = False) -> str:
     key = "template_confirm_edit" if edit else "template_confirm"
-    return t(lang, key, summary=summary)
+    return clip_text(t(lang, key, summary=summary), TELEGRAM_TEXT_LIMIT)
 
 
 def ask_adjust(lang: str) -> str:
@@ -237,7 +240,7 @@ def test_result(lang: str, res, sub: dict, template) -> str:
     if res.sample:
         lines.append("")
         lines.append(t(lang, "test_examples_head"))
-        for source, post, answers in res.sample:
+        for source, post, answers in res.sample[:_MAX_EXAMPLES]:
             timestamp = post.date.strftime("%m-%d %H:%M") if post.date else "?"
             values = "｜".join(
                 f"{question.title or qid} {format_answer_value(question, answers.get(qid))}"
@@ -245,10 +248,12 @@ def test_result(lang: str, res, sub: dict, template) -> str:
             snippet = post.text.replace("\n", " ")[:80]
             lines.append(t(lang, "test_line", source=source, timestamp=timestamp,
                             values=values, snippet=snippet))
+        if len(res.sample) > _MAX_EXAMPLES:
+            lines.append(t(lang, "more_items", n=len(res.sample) - _MAX_EXAMPLES))
     elif not res.error:
         lines.append("")
         lines.append(t(lang, "test_none"))
-    return "\n".join(lines)
+    return clip_text("\n".join(lines), TELEGRAM_TEXT_LIMIT)
 
 
 # -------------------------------------------------------------------- edit

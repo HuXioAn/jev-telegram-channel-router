@@ -8,6 +8,27 @@ from tgfilter.formatting import compose_digest, match_summary, template_summary
 from tgfilter.models import Post, Template
 
 
+def test_test_result_page_bounded():
+    """A multi-source dry-run must never overflow the Telegram text limit
+    (unbounded example lists used to raise BadRequest: Message_too_long)."""
+    from types import SimpleNamespace
+
+    from tgfilter.bot import messages as msg
+
+    res = SimpleNamespace(
+        sub_id=11, fetched=60, matched=60, failed=0, sent=False, error="",
+        sample=[("chan", Post(id=i, date=datetime(2026, 9, 22, 10, 0),
+                              text="文" * 3500, url=f"https://t.me/chan/{i}"),
+                 {"china": {"type": "noul", "noul": 0.9}})
+                for i in range(40)])
+    sub = {"id": 11, "enabled": 1,
+           "sources": [{"source": "chan"}, {"source": "other"}],
+           "dests": [{"kind": "dm", "chat_id": 1, "title": "私聊"}]}
+    text = msg.test_result("zh", res, sub, make_template())
+    assert len(text) <= 4000
+    assert "等 32 个" in text          # 40 examples, 8 shown, the rest folded
+
+
 def _post(mid: int, text: str = "内容", hour: int = 10) -> Post:
     return Post(id=mid, text=text, url=f"https://t.me/chan/{mid}",
                 date=datetime(2026, 9, 20, hour, 0, tzinfo=timezone.utc))

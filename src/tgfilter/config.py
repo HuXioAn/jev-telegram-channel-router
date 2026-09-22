@@ -47,6 +47,7 @@ class Settings:
     jev_concurrency: int = 8
     http_timeout: float = 30.0
     fetch_page_delay: float = 0.6
+    max_post_chars: int = 3500
     digest_chunk_limit: int = 3800
     judge_max_questions: int = 24
     default_lang: str = "en"
@@ -68,6 +69,7 @@ class Settings:
             jev_concurrency=_int("JEV_CONCURRENCY", 8),
             http_timeout=_float("HTTP_TIMEOUT", 30.0),
             fetch_page_delay=_float("FETCH_PAGE_DELAY", 0.6),
+            max_post_chars=_int("MAX_POST_CHARS", 3500),
             digest_chunk_limit=_int("DIGEST_CHUNK_LIMIT", 3800),
             default_lang=_env("DEFAULT_LANG", "en") or "en",
             admin_user_ids=_ids("ADMIN_USER_IDS"),

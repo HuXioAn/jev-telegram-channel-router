@@ -127,7 +127,8 @@ def build_application(settings: Settings) -> Application:
     async def post_init(app: Application) -> None:
         http = httpx.AsyncClient(timeout=settings.http_timeout)
         store = Store(settings.db_path)
-        fetcher = ChannelFetcher(http, settings.fetch_page_delay)
+        fetcher = ChannelFetcher(http, settings.fetch_page_delay,
+                                 max_chars=settings.max_post_chars)
         jev = JevClient(http, settings.typesafe_api_key, settings.typesafe_base_url,
                         settings.jev_concurrency)
         compiler = TemplateCompiler(http, settings) if settings.llm_enabled else None

@@ -17,7 +17,7 @@ from ..channel_fetch import ChannelError, normalize_channel_ref
 from ..formatting import match_summary, template_summary
 from ..i18n import LANG_LABELS
 from ..llm import LLMError
-from ..models import Template
+from ..models import TELEGRAM_TEXT_LIMIT, Template, clip_text
 from ..services import Services
 from ..store import template_of
 
@@ -118,6 +118,7 @@ def _dest_kb_edit(svc: Services, user_id: int, lang: str, sub: dict):
 
 async def _edit(query, text: str, reply_markup=None) -> None:
     """Edit a message; Telegram raises 'not modified' when content is identical — ignore it."""
+    text = clip_text(text, TELEGRAM_TEXT_LIMIT)  # hard cap: Telegram rejects longer texts
     try:
         await query.edit_message_text(text, reply_markup=reply_markup)
     except TelegramError as exc:

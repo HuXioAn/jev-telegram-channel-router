@@ -7,6 +7,17 @@ from typing import Annotated, Any, Literal, Union
 from pydantic import BaseModel, Field, model_validator
 
 
+DEFAULT_MAX_POST_CHARS = 3500  # post text judged by Jev / delivered (the rest lives behind the link)
+TELEGRAM_TEXT_LIMIT = 4000     # hard cap for one outgoing text (Telegram allows 4096)
+
+
+def clip_text(text: str, limit: int) -> str:
+    """Clip text to limit characters, marking a cut with an ellipsis."""
+    if limit <= 0 or len(text) <= limit:
+        return text
+    return text[:max(0, limit - 1)] + "…"
+
+
 class Post(BaseModel):
     """A single post in a channel."""
 

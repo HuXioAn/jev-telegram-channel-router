@@ -9,7 +9,7 @@ from datetime import datetime
 
 import httpx
 
-from .models import Post
+from .models import DEFAULT_MAX_POST_CHARS, Post, clip_text
 
 _BROWSER_UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -56,8 +56,13 @@ def parse_title(page_html: str) -> str:
     return html_lib.unescape(match.group(1)) if match else ""
 
 
-def parse_posts(page_html: str, channel: str) -> list[Post]:
-    """Parse posts out of the preview HTML (structure see tests/fixtures)."""
+def parse_posts(page_html: str, channel: str,
+                max_chars: int = DEFAULT_MAX_POST_CHARS) -> list[Post]:
+    """Parse posts out of the preview HTML (structure see tests/fixtures).
+
+    Post text is clipped to max_chars: judging and delivery both work on the
+    clipped text, and the link always points at the full post.
+    """
     posts: list[Post] = []
     for block in _BLOCK_SPLIT_RE.split(page_html)[1:]:
         id_match = _POST_ID_RE.search(block)
@@ -80,7 +85,7 @@ def parse_posts(page_html: str, channel: str) -> list[Post]:
                 date = datetime.fromisoformat(date_match.group(1).replace("Z", "+00:00"))
             except ValueError:
                 date = None
-        posts.append(Post(id=post_id, date=date, text=text,
+        posts.append(Post(id=post_id, date=date, text=clip_text(text, max_chars),
                           url=f"https://t.me/{channel}/{post_id}"))
     return posts
 
@@ -96,10 +101,12 @@ class ChannelInfo:
 class ChannelFetcher:
     """Rate-limit-polite fetching; the paging cursor is the "last seen position", so incremental resumes are natural."""
 
-    def __init__(self, http: httpx.AsyncClient, page_delay: float = 0.6, max_pages: int = 200):
+    def __init__(self, http: httpx.AsyncClient, page_delay: float = 0.6,
+                 max_pages: int = 200, max_chars: int = DEFAULT_MAX_POST_CHARS):
         self._http = http
         self._delay = page_delay
         self._max_pages = max_pages
+        self._max_chars = max_chars
         self._sleep = asyncio.sleep  # injectable (tests)
 
     async def _get(self, url: str, tries: int = 3) -> str:
@@ -119,7 +126,7 @@ class ChannelFetcher:
 
     async def head(self, channel: str) -> ChannelInfo:
         page_html = await self._get(f"https://t.me/s/{channel}")
-        posts = parse_posts(page_html, channel)
+        posts = parse_posts(page_html, channel, self._max_chars)
         if not posts:
             raise ChannelError(f"频道 {channel} 不可用或未开启网页预览")
         return ChannelInfo(channel=channel, title=parse_title(page_html) or channel,
@@ -131,7 +138,8 @@ class ChannelFetcher:
         cursor = after_id
         for _ in range(self._max_pages):
             page = [p for p in parse_posts(
-                await self._get(f"https://t.me/s/{channel}?after={cursor}"), channel)
+                await self._get(f"https://t.me/s/{channel}?after={cursor}"),
+                channel, self._max_chars)
                 if p.id > cursor]
             if not page:
                 break

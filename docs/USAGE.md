@@ -127,7 +127,9 @@ token counts returned by the APIs**:
 - **Sliding window** — public previews usually keep ~250k recent posts; a long outage
   may drop older ones.
 - **Copy-based delivery** — posts are re-published as "text + link" copies (native
-  forwarding is impossible — the bot has no rights over source channels).
+  forwarding is impossible — the bot has no rights over source channels). Post
+  text is clipped to `MAX_POST_CHARS` (default 3500) at fetch time: Jev judges
+  the clipped text and the copy carries clipped text + the link to the full post.
 
 ## Testing
 
