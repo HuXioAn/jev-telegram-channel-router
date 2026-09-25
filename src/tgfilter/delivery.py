@@ -1,4 +1,4 @@
-"""Delivery layer: send digest messages to a DM or channel."""
+"""Delivery layer: send matching posts individually to a DM or channel."""
 from __future__ import annotations
 
 import asyncio

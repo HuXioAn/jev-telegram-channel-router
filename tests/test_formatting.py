@@ -1,4 +1,4 @@
-"""Digest composition and chunking (all rendering is language-aware)."""
+"""Post-by-post message composition (all rendering is language-aware)."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -109,27 +109,28 @@ def test_compose_digest_text_plus_link_line():
                 f'<a href="https://t.me/chan">测试频道</a>')
 
     chunks = compose_digest(hits)
-    assert chunks == ["第一条消息\n" + footer(1, "Original post") +
-                      "\n\n第二条消息\n" + footer(2, "Original post")]
+    assert chunks == ["第一条消息\n" + footer(1, "Original post"),
+                      "第二条消息\n" + footer(2, "Original post")]
     zh = compose_digest(hits, lang="zh")
-    assert zh[0] == ("第一条消息\n" + footer(1, "原文链接") +
-                     "\n\n第二条消息\n" + footer(2, "原文链接"))
+    assert zh == ["第一条消息\n" + footer(1, "原文链接"),
+                  "第二条消息\n" + footer(2, "原文链接")]
     # header and per-item prefixes are gone
     assert "📮" not in chunks[0] and "订阅 #" not in chunks[0]
     assert "命中" not in chunks[0] and "09-20" not in chunks[0]
     assert not chunks[0].startswith("1.")
 
 
-def test_compose_digest_multi_chunk_marker_localized():
+def test_compose_digest_one_message_per_hit_even_when_all_would_fit():
     hits = [(_post(i, "x" * 900), _answers()) for i in range(1, 4)]
-    en = compose_digest(hits, chunk_limit=2000)
-    assert len(en) == 2
-    assert all(len(c) <= 2010 for c in en)
-    for i in range(1, 4):   # every post link appears exactly once across chunks
-        assert sum(c.count(f'href="https://t.me/chan/{i}"') for c in en) == 1
-    assert "(1/2)" in en[0] and "(2/2)" in en[1]
-    zh = compose_digest(hits, chunk_limit=2000, lang="zh")
-    assert "（1/2）" in zh[0] and "（2/2）" in zh[1]
+    for lang in ("en", "zh"):
+        messages = compose_digest(hits, chunk_limit=2000, lang=lang)
+        assert len(messages) == 3
+        assert all(len(m) <= 2000 for m in messages)
+        for i, message in enumerate(messages, 1):
+            assert message.count(f'href="https://t.me/chan/{i}"') == 1
+            assert all(f'href="https://t.me/chan/{j}"' not in message
+                       for j in range(1, 4) if j != i)
+            assert "(1/2)" not in message and "（1/2）" not in message
 
 
 def test_compose_digest_escapes_html_and_clips_oversized_block():
@@ -149,12 +150,12 @@ def test_compose_digest_empty():
     assert compose_digest([]) == []
 
 
-def test_compose_digest_test_marker_on_first_chunk_only():
-    hits = [(_post(i, "x" * 900), _answers()) for i in range(1, 4)]
-    en = compose_digest(hits, chunk_limit=2000, test=True)
-    assert len(en) == 2
-    assert en[0].startswith("🧪 Sample (not a real delivery)")
-    assert "🧪" not in en[1]
-    zh = compose_digest(hits, chunk_limit=2000, test=True, lang="zh")
-    assert zh[0].startswith("🧪 试跑样张（非正式推送）")
-    assert "🧪" not in zh[1]
+def test_compose_digest_test_marker_on_every_post_and_respects_limit():
+    hits = [(_post(i, "x" * 3000), _answers()) for i in range(1, 4)]
+    en = compose_digest(hits, chunk_limit=1000, test=True)
+    zh = compose_digest(hits, chunk_limit=1000, test=True, lang="zh")
+    assert len(en) == len(zh) == 3
+    assert all(m.startswith("🧪 Sample (not a real delivery)") and len(m) <= 1000
+               for m in en)
+    assert all(m.startswith("🧪 试跑样张（非正式推送）") and len(m) <= 1000
+               for m in zh)

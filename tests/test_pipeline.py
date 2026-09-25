@@ -215,11 +215,17 @@ async def test_run_watch_laggard_sub_gets_backlog(tmp_path):
     assert len(jev.calls) == 11                      # one call per message
     assert _cursor(store, a) == 205 and _cursor(store, b) == 205
     assert sender.sent[0][0] == 42
-    assert "m195" in sender.sent[0][1][0] and "m205" in sender.sent[0][1][0]
+    assert len(sender.sent[0][1]) == 11
+    assert [f"m{i}" in message for i, message in enumerate(sender.sent[0][1], 195)] == [True] * 11
+    assert all("\n\n" not in message for message in sender.sent[0][1])
     assert sender.sent[1][0] == 43
+    assert len(sender.sent[1][1]) == 5
     assert "m201" in sender.sent[1][1][0] and "m195" not in sender.sent[1][1][0]
+    assert "m205" in sender.sent[1][1][-1]
     assert store.usage_by_kind(user_id=7)["consumed"] == 11
     assert store.usage_by_kind(user_id=8)["consumed"] == 5
+    assert store.usage_by_kind(user_id=7)["deliver"] == 11
+    assert store.usage_by_kind(user_id=8)["deliver"] == 5
 
 
 async def test_run_watch_rerun_is_free_and_idempotent(tmp_path):
@@ -389,12 +395,14 @@ async def test_preview_sends_sample_to_destination(tmp_path):
     assert result.sample[0][0] == "chan"
     assert result.sent is True
     chat_id, chunks = sender.sent[0]
-    assert chat_id == 42 and chunks[0].startswith("🧪 试跑样张")
-    assert "msg104" in chunks[0] and "msg103" in chunks[0]
-    assert "msg100" not in chunks[0]
+    assert chat_id == 42 and len(chunks) == 2
+    assert all(chunk.startswith("🧪 试跑样张") for chunk in chunks)
+    assert "msg103" in chunks[0] and "msg104" in chunks[1]
+    assert "msg104" not in chunks[0] and "msg103" not in chunks[1]
+    assert all("msg100" not in chunk for chunk in chunks)
     assert _cursor(store, sub_id) == 95              # the cursor does not move
     assert store.usage_by_kind(user_id=7) == {"fetch": 1, "jev": 5,
-                                              "consumed": 5, "deliver": 1}
+                                              "consumed": 5, "deliver": 2}
 
 
 async def test_preview_delivery_failure_reported(tmp_path):

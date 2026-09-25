@@ -159,15 +159,15 @@ class Pipeline:
                        hits: list[tuple[Post, dict]], res: RunResult,
                        *, test: bool, lang: str) -> None:
         """Send one source's hits to every target of the subscription (independent outcomes)."""
-        chunks = formatting.compose_digest(hits, chunk_limit=self._chunk_limit,
-                                           test=test, lang=lang)
+        messages = formatting.compose_digest(hits, chunk_limit=self._chunk_limit,
+                                             test=test, lang=lang)
         sent_any = False
         for dest in sub["dests"]:
             label = dest["title"] or str(dest["chat_id"])
             try:
-                await self._sender.send(dest["chat_id"], chunks)
+                await self._sender.send(dest["chat_id"], messages)
                 sent_any = True
-                self._store.record_usage(sub["user_id"], "deliver", len(chunks),
+                self._store.record_usage(sub["user_id"], "deliver", len(messages),
                                          sub_id=sub["id"], detail=label)
             except DeliveryError as exc:
                 res.error = res.error or t(lang, "deliver_failed", label=label, err=exc)
@@ -175,7 +175,7 @@ class Pipeline:
         if sent_any:
             res.sent = True
             self._store.log(sub["id"], "delivered",
-                            f"{source}: {len(hits)} hits / {len(chunks)} msgs")
+                            f"{source}: {len(hits)} hits / {len(messages)} msgs")
 
     # ------------------------------------------------------------- dry-run
     async def _classify_batch(self, posts: list[Post], template: Template,

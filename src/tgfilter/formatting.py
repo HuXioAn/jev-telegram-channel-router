@@ -1,4 +1,4 @@
-"""Presentation helpers: template summaries, digests, Telegram chunking."""
+"""Presentation helpers: template summaries and one Telegram message per post."""
 from __future__ import annotations
 
 import html
@@ -91,38 +91,12 @@ def _post_block(post: Post, lang: str, limit: int) -> str:
 
 def compose_digest(hits: list[tuple[Post, dict]], *, chunk_limit: int = 3800,
                    test: bool = False, lang: str = "en") -> list[str]:
-    """Hit list → one or more ready-to-send message texts (send with HTML parse mode).
+    """Return one independently sendable HTML message per matching source post.
 
-    Each block holds only the post text plus its "post link | source" link line,
-    blocks separated by a blank line. Oversized digests are split into chunks
-    (marker at the bottom); test=True prepends the dry-run header to the first
-    chunk.
+    Keep the existing per-post text and linked footer. A dry-run marks *every*
+    message so later examples cannot be mistaken for real deliveries. Reserve
+    the marker's space before clipping an oversized post.
     """
-    if not hits:
-        return []
-    blocks = [_post_block(post, lang, chunk_limit) for post, _ in hits]
-
-    chunks = _chunk_blocks(blocks, chunk_limit)
-    if len(chunks) > 1:  # add the (i/n) marker when split
-        total = len(chunks)
-        chunks = [f"{chunk}\n\n{t(lang, 'chunk_mark', i=i, n=total)}"
-                  for i, chunk in enumerate(chunks, 1)]
-    if test:
-        chunks[0] = f"{t(lang, 'test_mark')}{chunks[0]}"
-    return chunks
-
-
-def _chunk_blocks(blocks: list[str], limit: int) -> list[str]:
-    """Pack blocks into chunks of at most `limit` chars (each block already fits)."""
-    chunks: list[str] = []
-    current = ""
-    for block in blocks:
-        candidate = f"{current}\n\n{block}" if current else block
-        if current and len(candidate) > limit:
-            chunks.append(current)
-            current = block
-        else:
-            current = candidate
-    if current:
-        chunks.append(current)
-    return chunks
+    marker = t(lang, "test_mark") if test else ""
+    return [marker + _post_block(post, lang, chunk_limit - len(marker))
+            for post, _ in hits]

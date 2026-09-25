@@ -31,7 +31,7 @@ never runs an agent loop.
 | `store.py` | SQLite layer: users, chats, subscriptions, watches, judgments, logs, usage, settings |
 | `pipeline.py` | Channel-round pipeline: `run_watch()` / `preview()`; metering and quota enforcement |
 | `delivery.py` | Sender abstraction: retries, rate-limit handling, error mapping (DM / channel) |
-| `formatting.py` | Digest composition ("text + link" blocks, chunking, dry-run marker) |
+| `formatting.py` | One message per matching post ("text + link", dry-run marker) |
 | `services.py` | Service container built in `post_init`, kept in `application.bot_data` |
 | `bot/app.py` | Application wiring, per-chat update serialization, due-watch ticker |
 | `bot/handlers.py` | Commands, the `/new` wizard, callbacks, membership events |
@@ -52,7 +52,7 @@ tick (60s) → due_watches() → one task per channel (deduped by _running)
    │     ├─ one Jev call per post, concurrency JEV_CONCURRENCY
    │     └─ store judgments (channel, post, fingerprint) with a 7-day TTL
    ├─ per subscription: consume-cursor slice → project answers → evaluate match
-   │     └─ hits → compose digest → deliver to every destination
+   │     └─ hits → one message per post → deliver to every destination
    └─ advance the channel fetch cursor
 ```
 
@@ -115,11 +115,11 @@ Schema evolution is handled by idempotent migrations at startup.
   ("bot not in the channel / user never started it") and `BadRequest` are
   mapped to a per-destination failure so one broken destination never blocks
   the others.
-- Digests are plain blocks: post text, newline, link — blank-line separated, no
-  header, no per-item prefixes. Oversized posts are hard-split; multi-chunk
-  deliveries get an `(i/n)` marker.
-- Dry-runs (`/test`) deliver the same format with a `🧪 sample` first-chunk
-  marker; they neither advance cursors nor count as deliveries.
+- Each matching source post is sent as one Telegram message: post text, newline,
+  linked original and source; no combined digest or per-item prefixes. Oversized
+  posts are clipped to the message budget and retain a link to the full post.
+- Dry-runs (`/test`) use the same one-post-per-message format with a `🧪 sample`
+  marker on each example; they neither advance cursors nor count as deliveries.
 
 ## Internationalization
 

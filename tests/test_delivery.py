@@ -34,6 +34,13 @@ async def test_sender_retries_after_rate_limit():
     assert bot.sent == ["hello"]
 
 
+async def test_sender_delivers_every_post_as_separate_telegram_message():
+    bot = FlakyBot()
+    await Sender(bot).send(1, ["first post", "second post", "third post"])
+    assert bot.attempts == 3
+    assert bot.sent == ["first post", "second post", "third post"]
+
+
 async def test_sender_maps_forbidden_to_delivery_error():
     with pytest.raises(DeliveryError):
         await Sender(BlockedBot()).send(1, ["x"])
