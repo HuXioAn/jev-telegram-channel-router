@@ -44,6 +44,11 @@ ENGLISH = (
                  False, id="shared-header-different-story"),
     pytest.param(STORY + "获批。", STORY + "遭拒。", False,
                  id="contradictory-final-conclusion"),
+    pytest.param("节点出现硬盘故障，机房已安排更换新硬盘，数据无法保留，恢复后会重装系统。"
+                 "正在依次重装中。",
+                 "节点出现硬盘故障，机房已安排更换新硬盘，数据无法保留，恢复后会重装系统。"
+                 "已完成重装系统，请自行开机使用。",
+                 False, id="realistic-outage-in-progress-vs-restored"),
     pytest.param(STORY + "预计不会调整。", STORY + "预计会调整。", False,
                  id="changed-chinese-negation"),
     pytest.param(ENGLISH + " It will not proceed.", ENGLISH + " It will proceed.",

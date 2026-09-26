@@ -34,7 +34,7 @@ dependency is involved.
    quotation with an otherwise new article. A multiset correctly counts
    repeated words/phrases. Numeric signs and comma/decimal notation are kept;
    the **ordered** sequence of figures must be compatible (allowing an extra
-   figure in one footer). Changed negations and two conflicting short endings
+   figure in one footer). Changed negations and conflicting substantive endings
    after an otherwise identical body also block fuzzy suppression. These
    conservative guards can miss some true reposts, but avoid hiding material
    changes. Very short/generic posts are only suppressed on a reasonably long
@@ -64,15 +64,42 @@ failures is unchanged by this feature.
 
 ## Validation and cost
 
-The public example posts `WantAnswer/7377` and `chxpd/3553` differ by a
-channel-specific footer; both are recognized as duplicates. In one read-only
-check of public windows from these and two English-language channels, one
-duplicate was flagged among 226 post pairs published within 24 hours, from 68
-fetched posts. The highest other weighted Jaccard score was 0.204. This is a
-sanity check, not a measured precision/recall guarantee.
-On the evaluation host, 1,000 comparisons of approximately 500-character texts
-took 203 ms wall time; 100 comparisons of approximately 4,000-character texts
-took 146 ms (one process, no network; machine dependent). The live
+The public example posts [WantAnswer/7377](https://t.me/WantAnswer/7377) and
+[chxpd/3553](https://t.me/chxpd/3553) differ by a channel-specific footer;
+they remain recognized as duplicates on a fresh read-only preview fetch.
+
+A larger **read-only retrospective** test used an existing local archive of
+public Telegram previews (posts dated 2022-02 through 2026-09; not distributed
+with this repository). Of 15,573 archived posts, 12,112 had usable, nonempty
+body text within the comparison length limit, from 268 source channels. The
+24-hour posting-time window yielded 1,527,108 pairs; 813,680 had at least
+24 canonical characters on both sides and were actually compared. In 22.7 s
+of local CPU/wall time, 771 pairs were flagged: 485 raw-text exact, 259
+normalized-text exact, and 27 fuzzy. Among 121 pairs with matching archived
+forward-origin identifiers, 111 were flagged and 10 left to send; the latter
+include genuine editorial additions. Forward-origin identity is only a
+**proxy** for related posts, not ground truth for whether their full texts
+should be suppressed.
+
+In a separate stress simulation that assumes *every* usable post was Jev-matched,
+sent successfully to **one shared destination**, and sent at its posting time,
+11,544 posts would be sent and 568 suppressed. Suppressed posts were **not**
+placed into the comparison history. This deliberately unrealistic all-to-one
+simulation does not predict traffic to any actual subscriber. The 771 pair
+matches likewise are not a count of real-world suppressed deliveries. Manual
+inspection of the 27 fuzzy flagged pairs identified one status-update risk in
+the previous version: an outage notice saying “reinstallation in progress”
+versus “restored.” A regression test and a stricter two-sided-ending veto now
+send both updates; an unchanged repeat of the restored notice still matches.
+Text-only comparisons cannot tell whether equal captions accompany different
+photos. No fully labeled corpus or production end-to-end send test exists, so
+the above is **not a measured precision/recall guarantee**.
+
+On the evaluation host, 1,000 comparisons of synthetic ~460-character texts
+took 254 ms (unrelated) or 284 ms (repost with footer); 100 comparisons of
+synthetic ~3,400-character texts took 176 ms or 196 ms respectively. These
+wall-clock microbenchmarks exclude canonicalization, database reads, and
+network; machine and input dependent. The live
 instance previously recorded 26 deliveries in a 24-hour period across its
 existing destinations, so indexing/LSH would be unnecessary complexity.
 

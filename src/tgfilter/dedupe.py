@@ -15,7 +15,7 @@ _NUMBERS = re.compile(r"[+\-]?\d+(?:[.,]\d+)?")
 _EN_NEGATIONS = re.compile(r"(?<![a-z])(?:not|never|without|no)(?![a-z])")
 _ZH_NEGATIONS = "不没無无未非否"
 _ATTRIBUTION = re.compile(
-    r"^(?:投稿|来稿|频道|订阅|关注本频道|欢迎关注|私信|source|"
+    r"^(?:投稿|来稿|频道|订阅|关注(?:本)?频道|欢迎关注|私信|source|"
     r"follow our channel|subscribe|via|contact)"
 )
 _EXACT_MIN = 24
@@ -80,12 +80,12 @@ def _ordered_subsequence(shorter: list[str], longer: list[str]) -> bool:
 
 
 def _changed_short_ending(a: str, b: str) -> bool:
-    """Veto a tiny two-sided replacement after a long shared narrative.
+    """Veto conflicting two-sided endings after a long shared narrative.
 
     One-sided additions (a channel footer) are fine. Two conflicting final
     claims such as "获批" versus "遭拒" must not be hidden just because the
-    preceding report is identical. This deliberately favors a false negative
-    on two *different* very short footers over losing a real update.
+    preceding report is identical. Prefer sending when both tails contain
+    unrecognized prose, even if most of the story is unchanged.
     """
     common = 0
     for left, right in zip(a, b):
@@ -98,9 +98,10 @@ def _changed_short_ending(a: str, b: str) -> bool:
     if ("https t me" in a[max(0, common - 25):common]
             and "https t me" in b[max(0, common - 25):common]):
         return False
+    if (_ATTRIBUTION.match(a[common:]) and _ATTRIBUTION.match(b[common:])):
+        return False
     return (common >= shorter * 0.8
-            and 0 < len(a) - common <= max(12, shorter // 10)
-            and 0 < len(b) - common <= max(12, shorter // 10))
+            and common < len(a) and common < len(b))
 
 
 def _only_attribution_added(shorter: str, longer: str) -> bool:
