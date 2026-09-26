@@ -24,6 +24,8 @@ class Post(BaseModel):
     id: int
     date: datetime | None = None
     text: str = ""
+    dedupe_text: str = ""  # longer source body for matching only; never judged or sent
+    dedupe_truncated: bool = False  # skip suppression when an unseen tail could differ
     url: str = ""
     channel: str = ""        # source channel username (link target of the footer)
     channel_title: str = ""  # display name of the source (page og:title)

@@ -84,6 +84,15 @@ CREATE TABLE IF NOT EXISTS usage (
     detail TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_usage_user_ts ON usage(user_id, ts);
+CREATE TABLE IF NOT EXISTS delivered_posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    sent_at TEXT NOT NULL,
+    canonical_text TEXT NOT NULL,
+    source_url TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_delivered_posts_chat_time
+    ON delivered_posts(chat_id, sent_at);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -539,6 +548,28 @@ class Store:
         """Prune expired judgment cache entries; returns the number of deleted rows."""
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         cursor = self._run("DELETE FROM judgments WHERE ts < ?", (cutoff,))
+        return int(cursor.rowcount or 0)
+
+    # --------------------------------------------------------- sent-post dedupe
+    def recent_deliveries(self, chat_id: int, *, now: datetime | None = None) -> list[dict]:
+        """Successful real sends to this destination in the preceding 24 hours."""
+        cutoff = ((now or datetime.now(timezone.utc)) - timedelta(hours=24)).isoformat()
+        return self._query(
+            "SELECT canonical_text, source_url FROM delivered_posts"
+            " WHERE chat_id=? AND sent_at>=? ORDER BY id DESC", (chat_id, cutoff))
+
+    def record_delivery(self, chat_id: int, canonical_text: str, source_url: str,
+                        *, when: datetime | None = None) -> None:
+        """Write only after Telegram has acknowledged this particular send."""
+        self._run(
+            "INSERT INTO delivered_posts(chat_id, sent_at, canonical_text, source_url)"
+            " VALUES(?,?,?,?)",
+            (chat_id, (when or datetime.now(timezone.utc)).isoformat(),
+             canonical_text, source_url))
+
+    def prune_deliveries(self, *, now: datetime | None = None) -> int:
+        cutoff = ((now or datetime.now(timezone.utc)) - timedelta(hours=24)).isoformat()
+        cursor = self._run("DELETE FROM delivered_posts WHERE sent_at < ?", (cutoff,))
         return int(cursor.rowcount or 0)
 
     # -------------------------------------------------------------- logs

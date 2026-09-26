@@ -1,8 +1,6 @@
 """Channel fetching: parsing, normalization, paged resume, error paths."""
 from __future__ import annotations
 
-import asyncio
-
 import httpx
 import pytest
 
@@ -57,6 +55,9 @@ def test_parse_posts_truncates_long_text():
     assert post.truncated is True
     assert post.url == "https://t.me/chan/101"
     assert len(parse_posts(html, "chan")[0].text) <= 500 + 1  # default cap (500) applies
+    assert len(post.dedupe_text) == 4000  # dedupe sees more, without changing Jev/push
+    assert post.dedupe_text.startswith("长" * 500)
+    assert post.dedupe_truncated is True
 
 
 def test_parse_title():

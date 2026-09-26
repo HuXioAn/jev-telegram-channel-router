@@ -52,7 +52,7 @@ tick (60s) → due_watches() → one task per channel (deduped by _running)
    │     ├─ one Jev call per post, concurrency JEV_CONCURRENCY
    │     └─ store judgments (channel, post, fingerprint) with a 7-day TTL
    ├─ per subscription: consume-cursor slice → project answers → evaluate match
-   │     └─ hits → one message per post → deliver to every destination
+   │     └─ hits → 24h same-destination near-duplicate check → one message per new post
    └─ advance the channel fetch cursor
 ```
 

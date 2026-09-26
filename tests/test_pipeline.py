@@ -1,5 +1,6 @@
 """Channel round pipeline: union judging (one call serves several templates), routing, cursors, cache idempotency, quota, dry run."""
 from __future__ import annotations
+import asyncio
 
 from conftest import make_template
 from tgfilter.channel_fetch import ChannelError, ChannelInfo
@@ -214,14 +215,13 @@ async def test_run_watch_laggard_sub_gets_backlog(tmp_path):
 
     assert len(jev.calls) == 11                      # one call per message
     assert _cursor(store, a) == 205 and _cursor(store, b) == 205
-    assert sender.sent[0][0] == 42
-    assert len(sender.sent[0][1]) == 11
-    assert [f"m{i}" in message for i, message in enumerate(sender.sent[0][1], 195)] == [True] * 11
-    assert all("\n\n" not in message for message in sender.sent[0][1])
-    assert sender.sent[1][0] == 43
-    assert len(sender.sent[1][1]) == 5
-    assert "m201" in sender.sent[1][1][0] and "m195" not in sender.sent[1][1][0]
-    assert "m205" in sender.sent[1][1][-1]
+    first = [messages[0] for chat, messages in sender.sent if chat == 42]
+    second = [messages[0] for chat, messages in sender.sent if chat == 43]
+    assert len(first) == 11 and len(second) == 5
+    assert all(f"m{i}" in message for i, message in enumerate(first, 195))
+    assert all("\n\n" not in message for message in first)
+    assert "m201" in second[0] and "m195" not in second[0]
+    assert "m205" in second[-1]
     assert store.usage_by_kind(user_id=7)["consumed"] == 11
     assert store.usage_by_kind(user_id=8)["consumed"] == 5
     assert store.usage_by_kind(user_id=7)["deliver"] == 11
@@ -394,9 +394,9 @@ async def test_preview_sends_sample_to_destination(tmp_path):
     assert [post.id for _, post, _ in result.sample] == [104, 103]  # newest first
     assert result.sample[0][0] == "chan"
     assert result.sent is True
-    chat_id, chunks = sender.sent[0]
-    assert chat_id == 42 and len(chunks) == 2
-    assert all(chunk.startswith("🧪 试跑样张") for chunk in chunks)
+    assert all(chat == 42 and len(messages) == 1 for chat, messages in sender.sent)
+    chunks = [messages[0] for _, messages in sender.sent]
+    assert len(chunks) == 2 and all(chunk.startswith("🧪 试跑样张") for chunk in chunks)
     assert "msg103" in chunks[0] and "msg104" in chunks[1]
     assert "msg104" not in chunks[0] and "msg103" not in chunks[1]
     assert all("msg100" not in chunk for chunk in chunks)
@@ -421,3 +421,173 @@ async def test_preview_delivery_failure_reported(tmp_path):
 
     assert result.sent is False
     assert "投递失败" in result.error
+
+
+def _same_story() -> str:
+    return ("今天去医院复查，医生说各项指标恢复正常，"
+            "我想把这个好消息分享给一直关心我的朋友们。") * 3
+
+
+async def test_near_duplicate_from_other_source_skips_only_the_delivery(tmp_path):
+    store = Store(str(tmp_path / "d.db"))
+    first = _sub(store, 7, 42, source="first")
+    second = _sub(store, 7, 42, source="second")
+    store.sync_watches()
+    body = _same_story()
+    fetcher = FakeFetcher({
+        "first": [Post(id=101, channel="first", text=body + "\n📮投稿 ☘️频道 🐧聊天",
+                       url="https://t.me/first/101")],
+        "second": [Post(id=101, channel="second", text=body + "\n关注频道 https://t.me/second",
+                        url="https://t.me/second/101")],
+    })
+    jev, sender = FakeJev(default=0.9), FakeSender()
+    pipeline = Pipeline(store, fetcher, jev, sender)
+    a = await pipeline.run_watch(store.get_watch("first"))
+    b = await pipeline.run_watch(store.get_watch("second"))
+
+    assert (a.matched, a.sent, a.dedup_skipped) == (1, True, 0)
+    assert (b.matched, b.sent, b.dedup_skipped) == (1, False, 1)
+    assert len(jev.calls) == 2 and len(sender.sent) == 1
+    assert _cursor(store, first) == _cursor(store, second) == 101
+    assert len(store.recent_deliveries(42)) == 1
+    assert store.usage_by_kind(user_id=7)["deliver"] == 1
+    assert store._query("SELECT COUNT(*) AS n FROM logs WHERE kind='duplicate_skipped'")[0]["n"] == 1
+
+
+async def test_dedupe_is_per_destination_across_subscriptions(tmp_path):
+    store = Store(str(tmp_path / "d.db"))
+    _sub(store, 7, 42, source="first")
+    second = _sub(store, 8, 42, source="second")
+    store.add_sub_dest(second, "channel", 43, "other")
+    store.sync_watches()
+    body = _same_story()
+    fetcher = FakeFetcher({
+        "first": [Post(id=101, text=body, url="https://t.me/first/101")],
+        "second": [Post(id=101, text=body + "\n🛎️转发", url="https://t.me/second/101")],
+    })
+    sender = FakeSender()
+    pipeline = Pipeline(store, fetcher, FakeJev(default=0.9), sender)
+    await pipeline.run_watch(store.get_watch("first"))
+    res = await pipeline.run_watch(store.get_watch("second"))
+
+    assert res.matched == 1 and res.dedup_skipped == 1 and res.sent
+    assert [chat for chat, _ in sender.sent] == [42, 43]
+    assert len(store.recent_deliveries(42)) == len(store.recent_deliveries(43)) == 1
+
+
+async def test_parallel_sources_cannot_both_send_to_the_same_destination(tmp_path):
+    class SlowSender(FakeSender):
+        async def send(self, chat_id: int, chunks: list[str]) -> None:
+            await asyncio.sleep(0.02)  # allow the other watch to race the check
+            await super().send(chat_id, chunks)
+
+    store = Store(str(tmp_path / "d.db"))
+    _sub(store, 7, 42, source="first")
+    _sub(store, 7, 42, source="second")
+    store.sync_watches()
+    body = _same_story()
+    fetcher = FakeFetcher({
+        "first": [Post(id=101, text=body, url="https://t.me/first/101")],
+        "second": [Post(id=101, text=body, url="https://t.me/second/101")],
+    })
+    sender = SlowSender()
+    pipeline = Pipeline(store, fetcher, FakeJev(default=0.9), sender)
+    results = await asyncio.gather(
+        pipeline.run_watch(store.get_watch("first")),
+        pipeline.run_watch(store.get_watch("second")))
+    assert len(sender.sent) == 1
+    assert sum(res.dedup_skipped for res in results) == 1
+    assert len(store.recent_deliveries(42)) == 1
+
+
+async def test_failed_send_never_claims_a_delivery(tmp_path):
+    store = Store(str(tmp_path / "d.db"))
+    _sub(store, 7, 42)
+    store.sync_watches()
+    body = _same_story()
+    sender = FakeSender(error="forbidden")
+    pipeline = Pipeline(store, FakeFetcher({"chan": [Post(id=101, text=body, url="u1")]}),
+                        FakeJev(default=0.9), sender)
+    res = await pipeline.run_watch(store.get_watch("chan"))
+    assert res.error and not res.sent and store.recent_deliveries(42) == []
+
+
+async def test_partial_batch_failure_retains_earlier_success_in_history(tmp_path):
+    class FailSecond(FakeSender):
+        async def send(self, chat_id: int, chunks: list[str]) -> None:
+            if "另一个独立故事" in chunks[0]:
+                raise DeliveryError("second send failed")
+            await super().send(chat_id, chunks)
+
+    store = Store(str(tmp_path / "d.db"))
+    _sub(store, 7, 42)
+    store.sync_watches()
+    posts = [
+        Post(id=101, text=_same_story(), url="https://t.me/chan/101"),
+        Post(id=102, text="另一个独立故事，内容与第一条完全不同，需要单独核验进展。" * 3,
+             url="https://t.me/chan/102"),
+    ]
+    sender = FailSecond()
+    pipeline = Pipeline(store, FakeFetcher({"chan": posts}), FakeJev(default=0.9), sender)
+    res = await pipeline.run_watch(store.get_watch("chan"))
+    assert res.matched == 2 and res.sent and "second send failed" in res.error
+    assert len(sender.sent) == 1
+    assert [r["source_url"] for r in store.recent_deliveries(42)] == [posts[0].url]
+    assert store.usage_by_kind(user_id=7)["deliver"] == 1
+
+
+async def test_dry_run_is_not_part_of_real_delivery_history(tmp_path):
+    store = Store(str(tmp_path / "d.db"))
+    sid = _sub(store, 7, 42, cursor=95)
+    body = _same_story()
+    store.record_delivery(42, body, "https://t.me/old/101")
+    sender = FakeSender()
+    fetcher = FakeFetcher({"chan": [Post(id=101, text=body, url="https://t.me/chan/101")]},
+                          head=ChannelInfo(channel="chan", title="t", head_id=101, posts=[]))
+    pipeline = Pipeline(store, fetcher, FakeJev(default=0.9), sender)
+    res = await pipeline.preview(store.get_subscription(sid), pool=10, limit=1)
+    assert res.sent and res.dedup_skipped == 0 and len(sender.sent) == 1
+    assert len(store.recent_deliveries(42)) == 1  # test sample did not enter history
+
+
+async def test_same_clipped_opening_does_not_hide_distinct_long_posts(tmp_path):
+    store = Store(str(tmp_path / "d.db"))
+    _sub(store, 7, 42, source="first")
+    _sub(store, 7, 42, source="second")
+    store.sync_watches()
+    first_500 = "共同前言" * 125
+    assert len(first_500) == 500
+    posts = {
+        "first": [Post(id=101, text=first_500,
+                       dedupe_text=first_500 + "警方已确认调查结果并公布完整报告。" * 15,
+                       url="https://t.me/first/101")],
+        "second": [Post(id=101, text=first_500,
+                        dedupe_text=first_500 + "新研究发现相关数据还需要重新核实。" * 15,
+                        url="https://t.me/second/101")],
+    }
+    sender = FakeSender()
+    pipeline = Pipeline(store, FakeFetcher(posts), FakeJev(default=0.9), sender)
+    await pipeline.run_watch(store.get_watch("first"))
+    res = await pipeline.run_watch(store.get_watch("second"))
+    assert res.dedup_skipped == 0 and len(sender.sent) == 2
+
+
+async def test_unseen_tail_beyond_dedupe_cap_is_not_suppressed(tmp_path):
+    store = Store(str(tmp_path / "d.db"))
+    _sub(store, 7, 42, source="first")
+    _sub(store, 7, 42, source="second")
+    store.sync_watches()
+    prefix = "完全相同的正文" * 700
+    assert len(prefix) > 4000
+    fetcher = FakeFetcher({
+        "first": [Post(id=101, text=prefix[:500], dedupe_text=prefix[:3999] + "…",
+                       dedupe_truncated=True, url="https://t.me/first/101")],
+        "second": [Post(id=101, text=prefix[:500], dedupe_text=prefix[:3999] + "…",
+                        dedupe_truncated=True, url="https://t.me/second/101")],
+    })
+    sender = FakeSender()
+    pipeline = Pipeline(store, fetcher, FakeJev(default=0.9), sender)
+    await pipeline.run_watch(store.get_watch("first"))
+    res = await pipeline.run_watch(store.get_watch("second"))
+    assert res.dedup_skipped == 0 and len(sender.sent) == 2
+    assert store.recent_deliveries(42) == []

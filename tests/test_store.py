@@ -7,6 +7,30 @@ from conftest import make_template
 from tgfilter.store import Store, template_of
 
 
+def test_delivery_history_is_persistent_scoped_and_expires_at_24h(tmp_path):
+    path = str(tmp_path / "deliveries.db")
+    now = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
+    store = Store(path)
+    store.record_delivery(42, "one", "https://t.me/source/1",
+                          when=now - timedelta(hours=23))
+    store.record_delivery(42, "boundary", "https://t.me/source/4",
+                          when=now - timedelta(hours=24))
+    store.record_delivery(43, "other", "https://t.me/other/2",
+                          when=now - timedelta(hours=1))
+    store.record_delivery(42, "old", "https://t.me/old/3",
+                          when=now - timedelta(hours=25))
+    assert [r["canonical_text"] for r in store.recent_deliveries(42, now=now)] == ["boundary", "one"]
+    assert len(store.recent_deliveries(43, now=now)) == 1
+    store.close()
+
+    store = Store(path)  # additive schema is idempotent across restarts
+    assert [r["canonical_text"] for r in store.recent_deliveries(42, now=now)] == ["boundary", "one"]
+    assert store.prune_deliveries(now=now) == 1
+    assert store.prune_deliveries(now=now) == 0
+    assert store._query("SELECT COUNT(*) AS n FROM delivered_posts")[0]["n"] == 3
+    store.close()
+
+
 def _store(tmp_path) -> Store:
     return Store(str(tmp_path / "test.db"))
 

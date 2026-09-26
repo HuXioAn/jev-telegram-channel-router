@@ -88,6 +88,8 @@ def parse_posts(page_html: str, channel: str,
                 date = None
         clipped = clip_text(text, max_chars)
         posts.append(Post(id=post_id, date=date, text=clipped,
+                          dedupe_text=clip_text(text, 4000),
+                          dedupe_truncated=len(text) > 4000,
                           truncated=clipped != text,
                           url=f"https://t.me/{channel}/{post_id}",
                           channel=channel, channel_title=title))

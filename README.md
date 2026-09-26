@@ -36,7 +36,7 @@ For example:
 per source channel, ticked every 60s (due-based):
   incremental fetch → union judgment: 1 Jev call per post, shared by every
   subscription on that channel → per-template match (cached, 7-day TTL)
-  → matches routed to DM / channels
+  → per-destination 24-hour near-duplicate check → matches routed to DM / channels
 ```
 
 More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -79,5 +79,5 @@ systemctl daemon-reload && systemctl enable --now tg-filter-bot
 ## More
 
 - **Full guide** — template JSON format, wizard & editing details, admin commands, metering, constraints: [docs/USAGE.md](docs/USAGE.md)
-- **Architecture** — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · **Design notes** — [docs/DESIGN.md](docs/DESIGN.md)
+- **Architecture** — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · **Deduplication** — [docs/DEDUPLICATION.md](docs/DEDUPLICATION.md) · **Design notes** — [docs/DESIGN.md](docs/DESIGN.md)
 - **License** — MIT

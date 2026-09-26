@@ -116,6 +116,7 @@ async def _tick(context) -> None:
     store = services.store
     store.sync_watches()
     store.prune_judgments()
+    store.prune_deliveries()
     interval = store.fetch_interval_minutes(services.settings.default_interval_minutes)
     for watch in store.due_watches(datetime.now(timezone.utc), interval):
         channel = watch["channel"]

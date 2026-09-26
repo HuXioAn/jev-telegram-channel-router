@@ -6,11 +6,13 @@
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from . import formatting
 from .channel_fetch import ChannelError, ChannelFetcher
+from .dedupe import canonicalize, is_duplicate
 from .delivery import DeliveryError, Sender
 from .i18n import t
 from .jev import JevClient
@@ -29,6 +31,7 @@ class RunResult:
     cached: int = 0                 # posts served from the judgment cache
     failed: int = 0
     sent: bool = False
+    dedup_skipped: int = 0         # post/destination deliveries skipped in this run
     sample: list[tuple[str, Post, dict]] = field(default_factory=list)  # dry-run sample
     error: str = ""
     input_tokens: int = 0
@@ -46,6 +49,7 @@ class Pipeline:
         self._chunk_limit = chunk_limit
         self._default_lang = default_lang
         self._judge = JudgeEngine(store, jev, max_questions)
+        self._destination_locks: dict[int, asyncio.Lock] = {}
 
     def _lang(self, user_id: int) -> str:
         """UI language for user-facing text produced by the pipeline."""
@@ -162,20 +166,46 @@ class Pipeline:
         messages = formatting.compose_digest(hits, chunk_limit=self._chunk_limit,
                                              test=test, lang=lang)
         sent_any = False
+        delivered = 0
+        skipped_here = 0
         for dest in sub["dests"]:
             label = dest["title"] or str(dest["chat_id"])
-            try:
-                await self._sender.send(dest["chat_id"], messages)
-                sent_any = True
-                self._store.record_usage(sub["user_id"], "deliver", len(messages),
-                                         sub_id=sub["id"], detail=label)
-            except DeliveryError as exc:
-                res.error = res.error or t(lang, "deliver_failed", label=label, err=exc)
-                self._store.log(sub["id"], "delivery_error", f"{label}: {exc}")
+            chat_id = dest["chat_id"]
+            # Channel rounds run concurrently. Hold one lock per destination
+            # across check → send → record so two source channels cannot both
+            # send the same content after checking the same previous state.
+            async with self._destination_locks.setdefault(chat_id, asyncio.Lock()):
+                for (post, _), message in zip(hits, messages):
+                    # Jev/delivery intentionally use 500 characters; dedupe
+                    # can compare more of the fetched source body so unrelated
+                    # long posts with the same opening are not hidden.
+                    canonical = canonicalize(post.dedupe_text or post.text)
+                    if not test and not post.dedupe_truncated and any(
+                        is_duplicate(canonical, row["canonical_text"])
+                        for row in self._store.recent_deliveries(chat_id)
+                    ):
+                        res.dedup_skipped += 1
+                        skipped_here += 1
+                        self._store.log(sub["id"], "duplicate_skipped",
+                                        f"destination {chat_id}: {post.url}")
+                        continue
+                    try:
+                        await self._sender.send(chat_id, [message])
+                    except DeliveryError as exc:
+                        res.error = res.error or t(lang, "deliver_failed", label=label, err=exc)
+                        self._store.log(sub["id"], "delivery_error", f"{label}: {exc}")
+                        break  # preserve per-destination failure isolation
+                    if not test and canonical and not post.dedupe_truncated:
+                        self._store.record_delivery(chat_id, canonical, post.url)
+                    sent_any = True
+                    delivered += 1
+                    self._store.record_usage(sub["user_id"], "deliver", 1,
+                                             sub_id=sub["id"], detail=label)
         if sent_any:
             res.sent = True
             self._store.log(sub["id"], "delivered",
-                            f"{source}: {len(hits)} hits / {len(messages)} msgs")
+                            f"{source}: {len(hits)} hits / {delivered} msgs"
+                            f" / {skipped_here} duplicate skips")
 
     # ------------------------------------------------------------- dry-run
     async def _classify_batch(self, posts: list[Post], template: Template,
