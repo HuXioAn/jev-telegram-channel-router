@@ -20,12 +20,13 @@ def test_same_long_story_with_different_channel_footers_and_urls():
     assert match(a, b)
 
 
-def test_minor_edits_in_chinese_and_english_remain_near_duplicates():
+def test_equivalent_weekday_spelling_matches_but_different_day_does_not():
     chinese = "这个项目已经公布正式的申请时间，周一开始提交资料，周五截止，请大家提前准备。" * 3
     assert match(chinese, chinese.replace("周一", "星期一", 1))
     english = ("The company published its final report on Tuesday, and the results "
                "were reviewed by the independent auditors before publication. ") * 2
-    assert match(english, english.replace("Tuesday", "Wednesday", 1) + " Follow our channel!")
+    assert not match(english, english.replace("Tuesday", "Wednesday", 1)
+                     + " Follow our channel!")
 
 
 def test_shared_generic_lead_but_different_main_content_is_not_duplicate():

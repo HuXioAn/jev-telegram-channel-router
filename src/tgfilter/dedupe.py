@@ -9,10 +9,15 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections import Counter
+from difflib import SequenceMatcher
 
 _NUMBERS = re.compile(r"[+\-]?\d+(?:[.,]\d+)?")
 _EN_NEGATIONS = re.compile(r"(?<![a-z])(?:not|never|without|no)(?![a-z])")
 _ZH_NEGATIONS = "不没無无未非否"
+_ATTRIBUTION = re.compile(
+    r"^(?:投稿|来稿|频道|订阅|关注本频道|欢迎关注|私信|source|"
+    r"follow our channel|subscribe|via|contact)"
+)
 _EXACT_MIN = 24
 _FUZZY_MIN = 60
 _SHINGLE = 4
@@ -27,6 +32,8 @@ def canonicalize(text: str) -> str:
     would create false positives.
     """
     text = unicodedata.normalize("NFKC", text).casefold()
+    # Same weekday, different Chinese spelling. Other weekdays remain distinct.
+    text = re.sub(r"(?:星期|礼拜)([一二三四五六日天])", r"周\1", text)
     # Nearest significant character to the right of each position. Construct
     # once so punctuation-heavy texts remain O(length), not quadratic.
     following: list[str] = [""] * len(text)
@@ -86,9 +93,23 @@ def _changed_short_ending(a: str, b: str) -> bool:
             break
         common += 1
     shorter = min(len(a), len(b))
+    # Different t.me channel handles at the very end are attribution, not a
+    # changed conclusion. Keep the veto for two differing ordinary text tails.
+    if ("https t me" in a[max(0, common - 25):common]
+            and "https t me" in b[max(0, common - 25):common]):
+        return False
     return (common >= shorter * 0.8
             and 0 < len(a) - common <= max(12, shorter // 10)
             and 0 < len(b) - common <= max(12, shorter // 10))
+
+
+def _only_attribution_added(shorter: str, longer: str) -> bool:
+    """A copied body plus extra prose is an update, not necessarily a repost."""
+    start = longer.find(shorter)
+    extra = longer[:start] + longer[start + len(shorter):]
+    return (len(extra) <= max(50, len(shorter) // 3)
+            and (extra == "转发" or "https t me" in extra
+                 or bool(_ATTRIBUTION.match(extra))))
 
 
 def is_duplicate(candidate: str, previous: str) -> bool:
@@ -126,4 +147,33 @@ def is_duplicate(candidate: str, previous: str) -> bool:
     # delivering a possible duplicate to suppressing a changed claim.
     if _negations(candidate) != _negations(previous):
         return False
-    return jaccard >= 0.78 or containment >= 0.88
+    if jaccard < 0.75 and containment < 0.86:
+        return False
+    if candidate in previous:
+        return _only_attribution_added(candidate, previous)
+    if previous in candidate:
+        return _only_attribution_added(previous, candidate)
+    if a == b:
+        return True  # paragraph moves with identical shingles need no alignment
+    # A high shingle score can conceal an opposite claim in the *middle* of
+    # an otherwise unchanged story. Two-sided substitutions there are unsafe;
+    # substantial insertions/deletions inside the core are also unsafe unless
+    # both posts have the same total length (e.g. moved paragraphs).
+    # The alignment runs only on already-strong candidates in the small 24h
+    # window, so ordinary unrelated comparisons retain their cheap fast path.
+    for tag, a_start, a_end, b_start, b_end in SequenceMatcher(
+            None, candidate, previous, autojunk=False).get_opcodes():
+        if (tag == "replace"
+                and a_end > len(candidate) * 0.08
+                and b_end > len(previous) * 0.08
+                and a_start < len(candidate) * 0.80
+                and b_start < len(previous) * 0.80):
+            return False
+        if (tag in ("insert", "delete") and len(candidate) != len(previous)
+                and max(a_end - a_start, b_end - b_start) >= 4
+                and a_end > len(candidate) * 0.08
+                and b_end > len(previous) * 0.08
+                and a_start < len(candidate) * 0.80
+                and b_start < len(previous) * 0.80):
+            return False
+    return True

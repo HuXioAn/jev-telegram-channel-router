@@ -28,7 +28,7 @@ dependency is involved.
 3. Exact normalized text (at least 24 characters) is a duplicate. For texts
    at least 60 characters long with a length ratio of at least 0.65, compare
    **multisets of overlapping four-character shingles**. Suppress if weighted
-   Jaccard is at least 0.78, or if at least 0.88 of the shorter post's shingles
+   Jaccard is at least 0.75, or if at least 0.86 of the shorter post's shingles
    occur in the longer one. The asymmetric score catches a common body with a
    moderate channel-specific footer; the length guard avoids equating a short
    quotation with an otherwise new article. A multiset correctly counts
@@ -39,6 +39,12 @@ dependency is involved.
    conservative guards can miss some true reposts, but avoid hiding material
    changes. Very short/generic posts are only suppressed on a reasonably long
    exact match, not a fuzzy guess.
+   For otherwise strong fuzzy candidates, a bounded text alignment rejects
+   two-sided replacements inside the core; different channel headers/footers
+   and paragraph movements are still allowed. Chinese weekday synonyms such
+   as `周一` and `星期一` are normalized before alignment.
+   A one-sided addition is treated as a footer only when it resembles channel
+   attribution or a `t.me` link; added substantive prose is sent.
 4. An `asyncio.Lock` per destination spans check → Telegram send → SQLite
    record, preventing simultaneous channel rounds from both sending the same
    text to one chat. Save only after that specific send succeeds. `delivered_posts`

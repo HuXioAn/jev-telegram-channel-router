@@ -1,6 +1,9 @@
 """Channel round pipeline: union judging (one call serves several templates), routing, cursors, cache idempotency, quota, dry run."""
 from __future__ import annotations
 import asyncio
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from conftest import make_template
 from tgfilter.channel_fetch import ChannelError, ChannelInfo
@@ -591,3 +594,85 @@ async def test_unseen_tail_beyond_dedupe_cap_is_not_suppressed(tmp_path):
     res = await pipeline.run_watch(store.get_watch("second"))
     assert res.dedup_skipped == 0 and len(sender.sent) == 2
     assert store.recent_deliveries(42) == []
+
+
+async def test_same_batch_sends_first_repost_and_distinct_third_post(tmp_path):
+    store = Store(str(tmp_path / "d.db"))
+    _sub(store, 7, 42)
+    store.sync_watches()
+    body = _same_story()
+    distinct = "另一篇报道来自不同采访，介绍交通规划的路线、施工安排和居民意见。" * 3
+    posts = [
+        Post(id=101, text=body, url="https://t.me/chan/101"),
+        Post(id=102, text="【投稿】" + body + "\n欢迎关注频道 https://t.me/other",
+             url="https://t.me/chan/102"),
+        Post(id=103, text=distinct, url="https://t.me/chan/103"),
+    ]
+    sender = FakeSender()
+    pipeline = Pipeline(store, FakeFetcher({"chan": posts}), FakeJev(default=0.9), sender)
+    res = await pipeline.run_watch(store.get_watch("chan"))
+    assert res.matched == 3 and res.dedup_skipped == 1 and res.sent
+    assert len(sender.sent) == 2
+    assert [r["source_url"] for r in store.recent_deliveries(42)] == [posts[2].url, posts[0].url]
+    assert store.usage_by_kind(user_id=7)["deliver"] == 2
+    assert _cursor(store, 1) == 103
+
+
+@pytest.mark.parametrize("age_hours,should_send", [(23, False), (25, True)])
+async def test_live_delivery_uses_send_time_not_source_post_time(tmp_path, age_hours, should_send):
+    store = Store(str(tmp_path / "d.db"))
+    _sub(store, 7, 42)
+    store.sync_watches()
+    body = _same_story()
+    from tgfilter.dedupe import canonicalize
+    store.record_delivery(42, canonicalize(body), "https://t.me/other/1",
+                          when=datetime.now(timezone.utc) - timedelta(hours=age_hours))
+    sender = FakeSender()
+    pipeline = Pipeline(store, FakeFetcher({"chan": [Post(id=101, text=body,
+                        url="https://t.me/chan/101",
+                        date=datetime.now(timezone.utc) - timedelta(days=10))]}),
+                        FakeJev(default=0.9), sender)
+    res = await pipeline.run_watch(store.get_watch("chan"))
+    assert res.matched == 1
+    assert res.sent is should_send
+    assert res.dedup_skipped == (0 if should_send else 1)
+    assert len(sender.sent) == int(should_send)
+
+
+async def test_history_survives_pipeline_restart_and_dedupes_another_channel(tmp_path):
+    path = str(tmp_path / "d.db")
+    store = Store(path)
+    _sub(store, 7, 42, source="first")
+    _sub(store, 7, 42, source="second")
+    store.sync_watches()
+    body = _same_story()
+    sender = FakeSender()
+    await Pipeline(store, FakeFetcher({"first": [Post(id=101, text=body, url="u1")]}),
+                   FakeJev(default=0.9), sender).run_watch(store.get_watch("first"))
+    store.close()
+
+    reopened = Store(path)
+    res = await Pipeline(reopened, FakeFetcher({"second": [Post(id=101, text=body,
+                           url="u2")]}), FakeJev(default=0.9), sender
+                         ).run_watch(reopened.get_watch("second"))
+    assert not res.sent and res.dedup_skipped == 1
+    assert len(sender.sent) == 1 and len(reopened.recent_deliveries(42)) == 1
+    reopened.close()
+
+
+async def test_unmatched_post_does_not_poison_delivery_history(tmp_path):
+    store = Store(str(tmp_path / "d.db"))
+    _sub(store, 7, 42, source="first")
+    _sub(store, 7, 42, source="second")
+    store.sync_watches()
+    body = _same_story()
+    fetcher = FakeFetcher({"first": [Post(id=101, text=body, url="u1")],
+                           "second": [Post(id=101, text=body, url="u2")]})
+    jev, sender = FakeJev(default=0.1), FakeSender()
+    pipeline = Pipeline(store, fetcher, jev, sender)
+    first = await pipeline.run_watch(store.get_watch("first"))
+    assert first.matched == 0 and not sender.sent and store.recent_deliveries(42) == []
+    jev.scores[body] = {CHINA: 0.95}
+    second = await pipeline.run_watch(store.get_watch("second"))
+    assert second.matched == 1 and second.sent and second.dedup_skipped == 0
+    assert len(sender.sent) == 1
